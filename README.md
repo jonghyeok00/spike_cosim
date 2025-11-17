@@ -1,7 +1,6 @@
-// ******************** PicoRv32 & Spike co-simulation testbench ************************ //
+// **** PicoRv32 & Spike co-simulation testbench *** *//
 
-
-// **** Pre-requisite ****
+// **** Pre-requisite **** //
 1. Install icarus verilog(Iverilog)
   &> sudo apt install -y autoconf gperf make gcc g++ bison flex
   &> git clone https://github.com/steveicarus/iverilog
@@ -19,14 +18,14 @@
   &> ./configure
   &> make
   &> sudo make install
-// ******************************************************************
 
-// **** Process ****
-  1. source env.sh
+// **** Process **** //
+  1. git clone https://github.com/jonghyeok00/spike_cosim.git
+  2. source env.sh
      - Must set the below variable for right path.
        **export RISCV_GNU_TOOLCHAIN_INSTALL_PREFIX=/opt/riscv**
-  2. make build
+  3. make build
      - Compilation & Linking
-  3. make sim
+  4. make sim
      - Spike C++(spike_dpi.cc) compilation in verilog testbench(testbench.v)
      - Run simulation and check the log results.
