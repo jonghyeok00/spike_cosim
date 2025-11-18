@@ -264,7 +264,7 @@ module picorv32_wrapper #(
 
 	initial begin
 		if (!$value$plusargs("firmware=%s", firmware_file)) begin
-			firmware_file = "tests/obj/pico_test.hex";
+			firmware_file = "tests/pico_test/obj/pico_test.hex";
 			$display("[DBG] picorv32 firmware_file = %0s", firmware_file);
 		end
 		
@@ -308,7 +308,7 @@ module picorv32_wrapper #(
 	initial begin
 		@(posedge resetn);
 		$display("At time %.2f:  [ns]", $time);
-		$spike_init("tests/obj/pico_test.elf");
+		$spike_init("tests/pico_test/obj/pico_test.elf");
 		#10;
 
 		for (j=0; j<5; j++) begin // run command step

@@ -1,6 +1,15 @@
 RISCV_GNU_TOOLCHAIN_GIT_REVISION = 411d134
+#####################################################################################
 #RISCV_GNU_TOOLCHAIN_INSTALL_PREFIX = /opt/riscv <- TODO) Must refer to env.sh !!
 TOOLCHAIN_PREFIX = $(RISCV_GNU_TOOLCHAIN_INSTALL_PREFIX)/bin/riscv32-unknown-elf-
+#TB_HOME := $(shell pwd)
+#OBJ_DIR = $(TB_HOME)/tests/obj
+TEST_DIR = $(TB_HOME)/tests/$(TEST_NAME)
+
+TEST_NAME = pico_test
+
+
+#####################################################################################
 
 # Give the user some easy overrides for local configuration quirks.
 # If you change one of these and it breaks, then you get to keep both pieces.
@@ -22,8 +31,6 @@ FIRMWARE_OBJS = firmware/start.o firmware/irq.o firmware/print.o firmware/hello.
 GCC_WARNS  = -Werror -Wall -Wextra -Wshadow -Wundef -Wpointer-arith -Wcast-qual -Wcast-align -Wwrite-strings
 GCC_WARNS += -Wredundant-decls -Wstrict-prototypes -Wmissing-prototypes -pedantic # -Wconversion
 
-#TB_HOME := $(shell pwd)
-OBJ_PATH = $(TB_HOME)/tests/obj
 
 COMPRESSED_ISA = C
 
@@ -132,41 +139,50 @@ tests/%.o: tests/%.S tests/riscv_test.h tests/test_macros.h
 		-DTEST_FUNC_TXT='"$(notdir $(basename $<))"' -DTEST_FUNC_RET=$(notdir $(basename $<))_ret $<
 
 
-
 # Compilation & Linking
 build:
-	rm -rf $(TB_HOME)/tests/obj
-	mkdir $(TB_HOME)/tests/obj
-	$(TOOLCHAIN_PREFIX)gcc -static -c -march=rv32i -mabi=ilp32 -o tests/obj/start.o tests/start.S
-	$(TOOLCHAIN_PREFIX)gcc -static -c -march=rv32i -mabi=ilp32 -Os -I./tests -o tests/obj/print.o tests/print.c
-	$(TOOLCHAIN_PREFIX)gcc -static -c -march=rv32i -mabi=ilp32 -Os -I./tests -o tests/obj/pico_test.o tests/pico_test.c
-	$(TOOLCHAIN_PREFIX)gcc -march=rv32i -mabi=ilp32 -Os -ffreestanding -nostdlib -Wl,--build-id=none,-Bstatic,-T,scripts/sections.lds,-Map,tests/obj/pico_test.map,--strip-debug \
+	rm -rf $(TEST_DIR)/obj
+	mkdir $(TEST_DIR)/obj
+	$(TOOLCHAIN_PREFIX)gcc -static -c -march=rv32i -mabi=ilp32 -o $(TEST_DIR)/obj/start.o $(TEST_DIR)/start.S
+	$(TOOLCHAIN_PREFIX)gcc -static -c -march=rv32i -mabi=ilp32 -Os -I./tests -o $(TEST_DIR)/obj/print.o $(TEST_DIR)/print.c
+	$(TOOLCHAIN_PREFIX)gcc -static -c -march=rv32i -mabi=ilp32 -Os -I./tests -o $(TEST_DIR)/obj/pico_test.o $(TEST_DIR)/pico_test.c
+	$(TOOLCHAIN_PREFIX)gcc -march=rv32i -mabi=ilp32 -Os -ffreestanding -nostdlib -Wl,--build-id=none,-Bstatic,-T,$(TEST_DIR)/sections.lds,-Map,tests/obj/pico_test.map,--strip-debug \
 								   -I./tests \
-								   -o tests/obj/pico_test.elf tests/obj/start.o tests/obj/print.o tests/obj/pico_test.o \
+								   -o $(TEST_DIR)/obj/pico_test.elf $(TEST_DIR)/obj/start.o $(TEST_DIR)/obj/print.o $(TEST_DIR)/obj/pico_test.o \
 								   -lc -lgcc
 	# elf -> lst
-	riscv32-unknown-elf-objdump -D tests/obj/pico_test.elf > tests/obj/pico_test.lst
+	$(TOOLCHAIN_PREFIX)objdump -D $(TEST_DIR)/obj/pico_test.elf > $(TEST_DIR)/obj/pico_test.lst
 	# elf -> bin
-	riscv32-unknown-elf-objcopy -O binary tests/obj/pico_test.elf tests/obj/pico_test.bin
+	$(TOOLCHAIN_PREFIX)objcopy -O binary $(TEST_DIR)/obj/pico_test.elf $(TEST_DIR)/obj/pico_test.bin
 	# bin -> hex
-	python3 scripts/makehex.py tests/obj/pico_test.bin 32768 > tests/obj/pico_test.hex
+	python3 scripts/makehex.py $(TEST_DIR)/obj/pico_test.bin 32768 > $(TEST_DIR)/obj/pico_test.hex
+##  riscv32-unknown-elf-gcc -static -c -march=rv32i -mabi=ilp32 -o $(TEST_DIR)/obj/start.o $(TEST_DIR)/start.S
 ##	spike --isa=RV32I --log-commits /opt/riscv/riscv32-unknown-elf/bin/pk firmware/pico/pico_test.elf > pico_test.log 2>&1
 ##	spike -l --isa=rv32i --log=spike_log /opt/riscv/riscv32-unknown-elf/bin/pk firmware/pico/pico_test.elf
 
-
-sim:
-	rm -rf $(TB_HOME)/dump
-	mkdir $(TB_HOME)/dump
-	make build
-	# Spike co-simulation
-	g++ tests/spike_dpi.cc -o tests/obj/libspike.so -fPIC -shared -std=c++17 \
+libspike:
+	rm -rf scripts/libspike.*
+	# make shared object file
+	g++ scripts/spike_dpi.cc -o scripts/libspike.so -fPIC -shared -std=c++17 \
 					-I/opt/riscv/include -I/opt/riscv/include/riscv -I/opt/riscv/include/fesvr -I/usr/local/include/iverilog -I/usr/share/verilator/include/vltstd \
 					-L/opt/riscv/include -L/opt/riscv/include/riscv -L/opt/riscv/include/fesvr -L/usr/local/include/iverilog -L/usr/share/verilator/include/vltstd \
 					-L/opt/riscv/lib -lriscv -lfesvr -lpthread -lgmp -lmpfr -lmpc -ldl -Wl,-rpath=/opt/riscv/lib \
 					-DVPI_WRAPPER
-	cp tests/obj/libspike.so tests/obj/libspike.vpi
+	cp scripts/libspike.so scripts/libspike.vpi
+
+# Spike co-simulation
+sim:
+	rm -rf $(TB_HOME)/dump
+	mkdir $(TB_HOME)/dump
+	make build
+	make libspike
 	iverilog -g2012 -o top/testbench.vvp top/testbench.v top/picorv32.v -DVPI_WRAPPER
-	vvp -M . -m tests/obj/libspike top/testbench.vvp +trace +vcd
+	vvp -M . -m scripts/libspike top/testbench.vvp +trace +vcd
+
+
+clean:
+	rm -rf $(TB_HOME)/dump $(TB_HOME)/scripts/libspike.* $(TB_HOME)/tests/$(TEST_NAME)/obj
+
 
 
 
@@ -219,9 +235,6 @@ build-tools:
 
 toc:
 	gawk '/^-+$$/ { y=tolower(x); gsub("[^a-z0-9]+", "-", y); gsub("-$$", "", y); printf("- [%s](#%s)\n", x, y); } { x=$$0; }' README.md
-
-clean:
-	rm -rf $(TB_HOME)/dump $(TB_HOME)/tests/obj
 	
 
 
