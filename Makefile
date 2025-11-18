@@ -6,7 +6,6 @@ TOOLCHAIN_PREFIX = $(RISCV_GNU_TOOLCHAIN_INSTALL_PREFIX)/bin/riscv32-unknown-elf
 #OBJ_DIR = $(TB_HOME)/tests/obj
 TEST_DIR = $(TB_HOME)/tests/$(TEST_NAME)
 
-TEST_NAME = pico_test
 
 
 #####################################################################################
@@ -139,6 +138,10 @@ tests/%.o: tests/%.S tests/riscv_test.h tests/test_macros.h
 		-DTEST_FUNC_TXT='"$(notdir $(basename $<))"' -DTEST_FUNC_RET=$(notdir $(basename $<))_ret $<
 
 
+
+#TEST_NAME = pico_test
+TEST_NAME = arith_basic_test
+
 # Compilation & Linking
 build:
 	rm -rf $(TEST_DIR)/obj
@@ -148,19 +151,44 @@ build:
 	$(TOOLCHAIN_PREFIX)gcc -static -c -march=rv32i -mabi=ilp32 -Os -I./tests -o $(TEST_DIR)/obj/pico_test.o $(TEST_DIR)/pico_test.c
 	$(TOOLCHAIN_PREFIX)gcc -march=rv32i -mabi=ilp32 -Os -ffreestanding -nostdlib -Wl,--build-id=none,-Bstatic,-T,$(TEST_DIR)/sections.lds,-Map,tests/obj/pico_test.map,--strip-debug \
 								   -I./tests \
-								   -o $(TEST_DIR)/obj/pico_test.elf $(TEST_DIR)/obj/start.o $(TEST_DIR)/obj/print.o $(TEST_DIR)/obj/pico_test.o \
+								   -o $(TEST_DIR)/obj/firmware.elf $(TEST_DIR)/obj/start.o $(TEST_DIR)/obj/print.o $(TEST_DIR)/obj/pico_test.o \
 								   -lc -lgcc
 	# elf -> lst
-	$(TOOLCHAIN_PREFIX)objdump -D $(TEST_DIR)/obj/pico_test.elf > $(TEST_DIR)/obj/pico_test.lst
+	$(TOOLCHAIN_PREFIX)objdump -D $(TEST_DIR)/obj/firmware.elf > $(TEST_DIR)/obj/firmware.lst
 	# elf -> bin
-	$(TOOLCHAIN_PREFIX)objcopy -O binary $(TEST_DIR)/obj/pico_test.elf $(TEST_DIR)/obj/pico_test.bin
+	$(TOOLCHAIN_PREFIX)objcopy -O binary $(TEST_DIR)/obj/firmware.elf $(TEST_DIR)/obj/firmware.bin
 	# bin -> hex
-	python3 scripts/makehex.py $(TEST_DIR)/obj/pico_test.bin 32768 > $(TEST_DIR)/obj/pico_test.hex
+	python3 scripts/makehex.py $(TEST_DIR)/obj/firmware.bin 32768 > $(TEST_DIR)/obj/firmware.hex
 ##  riscv32-unknown-elf-gcc -static -c -march=rv32i -mabi=ilp32 -o $(TEST_DIR)/obj/start.o $(TEST_DIR)/start.S
 ##	spike --isa=RV32I --log-commits /opt/riscv/riscv32-unknown-elf/bin/pk firmware/pico/pico_test.elf > pico_test.log 2>&1
 ##	spike -l --isa=rv32i --log=spike_log /opt/riscv/riscv32-unknown-elf/bin/pk firmware/pico/pico_test.elf
 
-libspike:
+build2:
+	@echo " @ TB_HOME = $(TB_HOME)"
+	@echo " @ TEST_DIR = $(TEST_DIR)"
+	@echo " @ TOOLCHAIN_PREFIX = $(TOOLCHAIN_PREFIX)"
+	rm -rf $(TEST_DIR)/obj
+	mkdir $(TEST_DIR)/obj
+	$(TOOLCHAIN_PREFIX)gcc -static -c -march=rv32imc -mabi=ilp32 -o $(TEST_DIR)/obj/start.o $(TEST_DIR)/start.S
+	$(TOOLCHAIN_PREFIX)gcc -static -c -march=rv32imc -mabi=ilp32 -Os -o $(TEST_DIR)/obj/riscv_arithmetic_basic_test_0.o $(TEST_DIR)/riscv_arithmetic_basic_test_0.S
+	$(TOOLCHAIN_PREFIX)gcc -march=rv32imc -mabi=ilp32 -Os -ffreestanding -nostdlib -Wl,--build-id=none,-Bstatic,-T,$(TEST_DIR)/sections.lds,--strip-debug \
+								   -I./tests \
+								   -o $(TEST_DIR)/obj/firmware.elf $(TEST_DIR)/obj/start.o $(TEST_DIR)/obj/riscv_arithmetic_basic_test_0.o \
+								   -lc -lgcc
+	# elf -> lst
+	$(TOOLCHAIN_PREFIX)objdump -D $(TEST_DIR)/obj/firmware.elf > $(TEST_DIR)/obj/firmware.lst
+	# elf -> bin
+	$(TOOLCHAIN_PREFIX)objcopy -O binary $(TEST_DIR)/obj/firmware.elf $(TEST_DIR)/obj/firmware.bin
+	# bin -> hex
+	python3 scripts/makehex.py $(TEST_DIR)/obj/firmware.bin 32768 > $(TEST_DIR)/obj/firmware.hex
+
+##  spike --isa=RV32IMC --log-commits /opt/riscv/riscv32-unknown-elf/bin/pk tests/arith_basic_test/obj/firmware.elf > tests/arith_basic_test/obj/firmware_spike.log 2>&1
+
+spikelog:
+	spike -l --log=$(TEST_DIR)/obj/spikelog --isa=rv32imc /opt/riscv/riscv32-unknown-elf/bin/pk $(TEST_DIR)/obj/firmware.elf
+	
+
+libspikeso:
 	rm -rf scripts/libspike.*
 	# make shared object file
 	g++ scripts/spike_dpi.cc -o scripts/libspike.so -fPIC -shared -std=c++17 \
@@ -174,10 +202,13 @@ libspike:
 sim:
 	rm -rf $(TB_HOME)/dump
 	mkdir $(TB_HOME)/dump
-	make build
-	make libspike
 	iverilog -g2012 -o top/testbench.vvp top/testbench.v top/picorv32.v -DVPI_WRAPPER
-	vvp -M . -m scripts/libspike top/testbench.vvp +trace +vcd
+	vvp -M . -m scripts/libspike top/testbench.vvp +trace +vcd +verbose
+
+all:
+	make build2
+	make libspikeso
+	make sim
 
 
 clean:
