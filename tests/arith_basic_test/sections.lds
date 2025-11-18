@@ -5,12 +5,10 @@ MEMORY {
 }
 
 SECTIONS {
-	.memory : {
-		. = 0x00000000;
-		start*(.text);
-		*(.text);
-		*(*);
-		end = .;
+	.text : {
+		start*(.text)
+		*(.text)
+		*(*)
 		. = ALIGN(4);
 	} > mem
 }

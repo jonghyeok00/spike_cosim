@@ -1,10 +1,9 @@
 
 
 	.section .text
-	.global	hello
+	.global _start
 	.global hello_end
 	.global reset_vec
-	.global main
 
 _start : 
 	/* zero-initialize all registers */
@@ -46,12 +45,10 @@ _start :
 	/* Main Function */
 	//jal ra, hello	
 	//jal ra, hello_end	
+	jal ra, main
 	//jal ra, hello_end	
 
-//	jal ra, main
-
-    /* Move to 0x1000_0000 */
-/*	
+	/* Move to 0x1000_0000 */
     lui a0,0x10000000>>12
     addi a1,zero,'D'
     addi a2,zero,'O'
@@ -63,13 +60,11 @@ _start :
     sw a3,0(a0)
     sw a4,0(a0)
     sw a5,0(a0)
-*/ 
     /* Move to 0x2000_0000 and write(store) 0x123456789 */
-/*	
     li a0, 0x20000000
     li a1, 123456789
     sw a1, 0(a0)
-*/
+
 	/* Program Finish */
-//	ebreak
+	ebreak
 

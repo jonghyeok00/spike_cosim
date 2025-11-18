@@ -146,17 +146,17 @@ TEST_NAME = arith_basic_test
 build:
 	rm -rf $(TEST_DIR)/obj
 	mkdir $(TEST_DIR)/obj
-	$(TOOLCHAIN_PREFIX)gcc -static -c -march=rv32i -mabi=ilp32 -o $(TEST_DIR)/obj/start.o $(TEST_DIR)/start.S
-	$(TOOLCHAIN_PREFIX)gcc -static -c -march=rv32i -mabi=ilp32 -Os -I./tests -o $(TEST_DIR)/obj/print.o $(TEST_DIR)/print.c
-	$(TOOLCHAIN_PREFIX)gcc -static -c -march=rv32i -mabi=ilp32 -Os -I./tests -o $(TEST_DIR)/obj/pico_test.o $(TEST_DIR)/pico_test.c
-	$(TOOLCHAIN_PREFIX)gcc -march=rv32i -mabi=ilp32 -Os -ffreestanding -nostdlib -Wl,--build-id=none,-Bstatic,-T,$(TEST_DIR)/sections.lds,-Map,tests/obj/pico_test.map,--strip-debug \
+	riscv32-unknown-elf-gcc -static -c -march=rv32i -mabi=ilp32 -o $(TEST_DIR)/obj/start.o $(TEST_DIR)/start.S
+	riscv32-unknown-elf-gcc -static -c -march=rv32i -mabi=ilp32 -Os -I./tests -o $(TEST_DIR)/obj/print.o $(TEST_DIR)/print.c
+	riscv32-unknown-elf-gcc -static -c -march=rv32i -mabi=ilp32 -Os -I./tests -o $(TEST_DIR)/obj/pico_test.o $(TEST_DIR)/pico_test.c
+	riscv32-unknown-elf-gcc -march=rv32i -mabi=ilp32 -Os -ffreestanding -nostdlib -Wl,--build-id=none,-Bstatic,-T,$(TEST_DIR)/sections.lds,-Map,tests/obj/pico_test.map,--strip-debug \
 								   -I./tests \
 								   -o $(TEST_DIR)/obj/firmware.elf $(TEST_DIR)/obj/start.o $(TEST_DIR)/obj/print.o $(TEST_DIR)/obj/pico_test.o \
 								   -lc -lgcc
 	# elf -> lst
-	$(TOOLCHAIN_PREFIX)objdump -D $(TEST_DIR)/obj/firmware.elf > $(TEST_DIR)/obj/firmware.lst
+	riscv32-unknown-elf-objdump -D $(TEST_DIR)/obj/firmware.elf > $(TEST_DIR)/obj/firmware.lst
 	# elf -> bin
-	$(TOOLCHAIN_PREFIX)objcopy -O binary $(TEST_DIR)/obj/firmware.elf $(TEST_DIR)/obj/firmware.bin
+	riscv32-unknown-elf-objcopy -O binary $(TEST_DIR)/obj/firmware.elf $(TEST_DIR)/obj/firmware.bin
 	# bin -> hex
 	python3 scripts/makehex.py $(TEST_DIR)/obj/firmware.bin 32768 > $(TEST_DIR)/obj/firmware.hex
 ##  riscv32-unknown-elf-gcc -static -c -march=rv32i -mabi=ilp32 -o $(TEST_DIR)/obj/start.o $(TEST_DIR)/start.S
@@ -169,16 +169,16 @@ build2:
 	@echo " @ TOOLCHAIN_PREFIX = $(TOOLCHAIN_PREFIX)"
 	rm -rf $(TEST_DIR)/obj
 	mkdir $(TEST_DIR)/obj
-	$(TOOLCHAIN_PREFIX)gcc -static -c -march=rv32imc -mabi=ilp32 -o $(TEST_DIR)/obj/start.o $(TEST_DIR)/start.S
-	$(TOOLCHAIN_PREFIX)gcc -static -c -march=rv32imc -mabi=ilp32 -Os -o $(TEST_DIR)/obj/riscv_arithmetic_basic_test_0.o $(TEST_DIR)/riscv_arithmetic_basic_test_0.S
-	$(TOOLCHAIN_PREFIX)gcc -march=rv32imc -mabi=ilp32 -Os -ffreestanding -nostdlib -Wl,--build-id=none,-Bstatic,-T,$(TEST_DIR)/sections.lds,--strip-debug \
+	riscv32-unknown-elf-gcc -static -c -march=rv32i -mabi=ilp32 -o $(TEST_DIR)/obj/start.o $(TEST_DIR)/start.S
+	riscv32-unknown-elf-gcc -static -c -march=rv32i -mabi=ilp32 -Os -o $(TEST_DIR)/obj/riscv_arithmetic_basic_test_0.o $(TEST_DIR)/riscv_arithmetic_basic_test_0.S
+	riscv32-unknown-elf-gcc -march=rv32i -mabi=ilp32 -Os -ffreestanding -nostdlib -Wl,--build-id=none,-Bstatic,-T,$(TEST_DIR)/sections.lds,--strip-debug \
 								   -I./tests \
 								   -o $(TEST_DIR)/obj/firmware.elf $(TEST_DIR)/obj/start.o $(TEST_DIR)/obj/riscv_arithmetic_basic_test_0.o \
 								   -lc -lgcc
 	# elf -> lst
-	$(TOOLCHAIN_PREFIX)objdump -D $(TEST_DIR)/obj/firmware.elf > $(TEST_DIR)/obj/firmware.lst
+	riscv32-unknown-elf-objdump -D $(TEST_DIR)/obj/firmware.elf > $(TEST_DIR)/obj/firmware.lst
 	# elf -> bin
-	$(TOOLCHAIN_PREFIX)objcopy -O binary $(TEST_DIR)/obj/firmware.elf $(TEST_DIR)/obj/firmware.bin
+	riscv32-unknown-elf-objcopy -O binary $(TEST_DIR)/obj/firmware.elf $(TEST_DIR)/obj/firmware.bin
 	# bin -> hex
 	python3 scripts/makehex.py $(TEST_DIR)/obj/firmware.bin 32768 > $(TEST_DIR)/obj/firmware.hex
 
@@ -187,6 +187,14 @@ build2:
 spikelog:
 	spike -l --log=$(TEST_DIR)/obj/spikelog --isa=rv32imc /opt/riscv/riscv32-unknown-elf/bin/pk $(TEST_DIR)/obj/firmware.elf
 	
+spikeconv:
+	#Pico log
+	python3 scripts/showtrace.py dump/testbench.trace tests/arith_basic_test/obj/firmware.elf | tee dump/tracelog
+	#spike log
+	spike --log-commits --log=dump/log --isa=rv32i /opt/riscv/riscv32-unknown-elf/bin/pk tests/arith_basic_test/obj/firmware.elf 
+	python3 scripts/reg_convert.py dump/log dump/converted_reglog
+	python3 scripts/reg_compare.py dump/converted_reglog dump/reglog	
+
 
 libspikeso:
 	rm -rf scripts/libspike.*
@@ -203,7 +211,7 @@ sim:
 	rm -rf $(TB_HOME)/dump
 	mkdir $(TB_HOME)/dump
 	iverilog -g2012 -o top/testbench.vvp top/testbench.v top/picorv32.v -DVPI_WRAPPER
-	vvp -M . -m scripts/libspike top/testbench.vvp +trace +vcd +verbose
+	vvp -M . -m scripts/libspike top/testbench.vvp +trace +vcd
 
 all:
 	make build2
@@ -212,7 +220,7 @@ all:
 
 
 clean:
-	rm -rf $(TB_HOME)/dump $(TB_HOME)/scripts/libspike.* $(TB_HOME)/tests/$(TEST_NAME)/obj
+	rm -rf $(TB_HOME)/dump $(TB_HOME)/scripts/libspike.* $(TEST_DIR)/obj
 
 
 
