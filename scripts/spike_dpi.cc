@@ -11,6 +11,8 @@
 #include "elfloader.h"
 #include "elf.h"
 #include "htif.h"
+#include "mmu.h"
+#include "decode.h"
 #include <vector>
 #include <string>
 /* ========================================================= */
@@ -242,6 +244,7 @@ extern "C" {
 
 	// ---------- VPI: $spike_get_pc ----------
 	// Task: Print PC value
+	/*
 	PLI_INT32 spike_get_pc_vpi_calltf(PLI_BYTE8* user_data) {
 		if (!spike_sim_instance || !spike_cpu_instance) {
 			vpi_printf("[VPI_ERROR] $spike_get_pc: Spike not initialized\n");
@@ -254,6 +257,150 @@ extern "C" {
 
 		return 0;
 	}
+	*/
+
+	PLI_INT32 spike_get_pc_vpi_calltf(PLI_BYTE8* user_data) {
+	    vpiHandle tf_call_h;
+	    vpiHandle arg_itr_h;
+	    vpiHandle arg_h;
+	    s_vpi_value arg_value;
+	
+	    // 1. 태스크 호출 핸들 가져오기
+	    tf_call_h = vpi_handle(vpiSysTfCall, NULL); // 현재 시스템 태스크 호출의 핸들을 얻습니다.
+	    if (!tf_call_h) {
+	        vpi_printf("[VPI_ERROR] $spike_get_pc: Failed to get task call handle.\n");
+	        return 1;
+	    }
+	
+	    // 2. 인자 목록(iterator) 가져오기
+	    arg_itr_h = vpi_iterate(vpiArgument, tf_call_h); // 태스크 인자들을 반복할 수 있는 iterator를 얻습니다.
+	    if (!arg_itr_h) {
+	        vpi_printf("[VPI_ERROR] $spike_get_pc: No arguments provided to $spike_get_pc. Expected one argument.\n");
+	        return 1;
+	    }
+	
+	    // 3. 첫 번째 인자 핸들 가져오기
+	    arg_h = vpi_scan(arg_itr_h); // 첫 번째 인자의 핸들을 얻습니다.
+	    if (!arg_h) {
+	        vpi_printf("[VPI_ERROR] $spike_get_pc: Failed to get the first argument handle.\n");
+	        vpi_free_object(arg_itr_h); // 사용 후 iterator 해제
+	        return 1;
+	    }
+	
+	    // 4. Spike CPU 인스턴스 유효성 확인 (기존 로직)
+	    if (!spike_sim_instance || !spike_cpu_instance) {
+	        vpi_printf("[VPI_ERROR] $spike_get_pc: Spike not initialized.\n");
+	        vpi_free_object(arg_itr_h);
+	        return 1;
+	    }
+	
+	    uint32_t pc = (uint32_t)spike_cpu_instance->get_state()->pc;
+	    vpi_printf("[VPI_INFO] PC = 0x%08x\n", pc);
+	
+	    // 6. 베릴로그 인자에 PC 값 설정
+	    arg_value.format = vpiIntVal; // 정수 형태로 값을 설정할 것임을 지정합니다.
+	    arg_value.value.integer = (PLI_INT32)pc; // uint32_t를 PLI_INT32로 캐스팅하여 값을 넣어줍니다.
+	
+	    vpi_put_value(arg_h, &arg_value, NULL, vpiNoDelay); // 인자 핸들에 PC 값을 씁니다.
+	
+	    vpi_free_object(arg_itr_h); // 사용 후 iterator 해제 (중요!)
+	
+	    return 0;
+	}
+	
+	
+	// VPI: $spike_get_instr (태스크 함수)
+	PLI_INT32 spike_get_instr_vpi_calltf(PLI_BYTE8* user_data) {
+	    vpiHandle tf_call_h;
+	    vpiHandle arg_itr_h;
+	    vpiHandle pc_arg_h;         // 첫 번째 인자: PC 주소 (입력)
+	    vpiHandle insn_arg_h;       // 두 번째 인자: 인스트럭션 (출력)
+	    s_vpi_value arg_value;
+	    //reg_t target_pc = 0; 
+	    uint32_t target_pc = 0; 
+	    //insn_t encoded_instruction = 0; // Spike에서 읽어온 32비트 인스트럭션
+	    uint32_t encoded_instruction = 0; // Spike에서 읽어온 32비트 인스트럭션
+	
+	    // 1. 태스크 호출 핸들 가져오기
+	    tf_call_h = vpi_handle(vpiSysTfCall, NULL);
+	    if (!tf_call_h) {
+	        vpi_printf("[VPI_ERROR] $spike_get_instr: Failed to get task call handle.\n");
+	        return 1;
+	    }
+	
+	    // 2. 인자 목록(iterator) 가져오기
+	    arg_itr_h = vpi_iterate(vpiArgument, tf_call_h);
+	    if (!arg_itr_h) {
+	        vpi_printf("[VPI_ERROR] $spike_get_instr: No arguments provided. Expected two arguments (PC, instruction_output).\n");
+	        return 1;
+	    }
+	
+	    // 3. 첫 번째 인자 핸들 (PC 주소) 가져오기
+	    pc_arg_h = vpi_scan(arg_itr_h);
+	    if (!pc_arg_h) {
+	        vpi_printf("[VPI_ERROR] $spike_get_instr: Failed to get the first argument (PC address).\n");
+	        vpi_free_object(arg_itr_h);
+	        return 1;
+	    }
+	
+	    // 4. 두 번째 인자 핸들 (encoded_instruction 출력) 가져오기
+	    insn_arg_h = vpi_scan(arg_itr_h);
+	    if (!insn_arg_h) {
+	        vpi_printf("[VPI_ERROR] $spike_get_instr: Failed to get the second argument (encoded_instruction output).\n");
+	        vpi_free_object(arg_itr_h);
+	        return 1;
+	    }
+	
+	    // 5. Spike CPU 인스턴스 유효성 확인
+	    if (!spike_cpu_instance) {
+	        vpi_printf("[VPI_ERROR] $spike_get_instr: Spike CPU instance not initialized.\n");
+	        vpi_free_object(arg_itr_h);
+	        return 1;
+	    }
+	
+	    // 6. 첫 번째 인자 (PC 주소) 값 읽기
+	    arg_value.format = vpiIntVal; // 베릴로그에서 정수 형태로 PC 값을 받을 것
+	    vpi_get_value(pc_arg_h, &arg_value);
+	    target_pc = (reg_t)arg_value.value.integer; // 읽어온 PC 값을 Spike의 reg_t 타입으로 변환
+	
+	    vpi_printf("[VPI_INFO] Requesting instruction at PC = 0x%08x\n", target_pc);
+	
+	    // 7. Spike의 MMU를 통해 해당 PC 주소의 인스트럭션 가져오기
+	    try {
+	        // processor_t에서 mmu_t 객체를 얻습니다.
+	        mmu_t* mmu = spike_cpu_instance->get_mmu();
+			
+	        if (mmu) {
+			  	insn_fetch_t fetched_insn_obj = mmu -> load_insn(target_pc);
+	            encoded_instruction = fetched_insn_obj.insn.bits();
+	            vpi_printf("[VPI_INFO] Fetched instruction: 0x%08x\n", encoded_instruction);
+	        } else {
+	            vpi_printf("[VPI_ERROR] $spike_get_instr: Failed to get MMU from Spike CPU instance.\n");
+	            vpi_free_object(arg_itr_h);
+	            return 1;
+	        }
+			
+	    } catch (trap_t& t) {
+	        // 메모리 접근 오류 (페이지 폴트 등) 처리
+	        vpi_printf("[VPI_ERROR] $spike_get_instr: Trap occurred during instruction fetch at 0x%llx (cause: %llu).\n", (long long)target_pc, (long long)t.cause());
+	        encoded_instruction = 0xFFFFFFFF; // 에러 시 기본값 또는 에러 코드 설정
+	    }
+	
+	    // 8. 가져온 인스트럭션을 두 번째 인자(insn_arg_h)에 설정하여 베릴로그로 전달
+	    arg_value.format = vpiIntVal; // 정수 형태로 값을 설정할 것임을 지정합니다.
+	    arg_value.value.integer = (PLI_INT32)encoded_instruction; // insn_t를 PLI_INT32로 캐스팅하여 값을 넣어줍니다.
+	
+	    vpi_put_value(insn_arg_h, &arg_value, NULL, vpiNoDelay); // 인자 핸들에 인스트럭션 값을 씁니다.
+	
+	    vpi_free_object(arg_itr_h); // 사용 후 iterator 해제 (매우 중요!)
+	
+	    return 0; // 성공적으로 수행되었음을 알립니다.
+	}
+
+
+
+
+
 
 
 	// ---------- VPI: $spike_get_reg(idx) ----------
@@ -342,6 +489,17 @@ extern "C" {
         tf_data_get_pc.tfname = "$spike_get_pc";
         vpi_register_systf(&tf_data_get_pc);
 
+		// Task 4: $spike_get_instr
+        s_vpi_systf_data tf_data_get_instr;
+        tf_data_get_instr.type = vpiSysTask;
+        tf_data_get_instr.sysfunctype = 0;
+        tf_data_get_instr.calltf = spike_get_instr_vpi_calltf;
+        tf_data_get_instr.compiletf = NULL;
+		tf_data_get_instr.sizetf = NULL;
+		tf_data_get_instr.user_data = NULL;
+        tf_data_get_instr.tfname = "$spike_get_instr";
+        vpi_register_systf(&tf_data_get_instr);
+
 		// Task 4: $spike_get_reg
         s_vpi_systf_data tf_data_get_reg;
         tf_data_get_reg.type = vpiSysTask;
@@ -352,6 +510,7 @@ extern "C" {
 		tf_data_get_reg.user_data = NULL;
         tf_data_get_reg.tfname = "$spike_get_reg";
         vpi_register_systf(&tf_data_get_reg);
+
 
 		// register callback in the end of simulation
         s_cb_data cb_data_end;
