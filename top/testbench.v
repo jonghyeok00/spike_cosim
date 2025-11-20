@@ -315,13 +315,24 @@ module picorv32_wrapper #(
 		//$spike_init("tests/pico_test/obj/firmware.elf");
 		#10;
 	
+		$spike_run_steps(205500);
 		$spike_get_pc(cur_pc);
-		while (cur_pc != 'h00000480) begin
+	
+		
+		while (cur_pc != 'h00000000) begin
 			$spike_get_pc(cur_pc);
 			$spike_run_steps(1);
 		end
+	
 		$display("[Verilog] Current PC value: 0x%08x", cur_pc);
-
+		
+		/*
+		while (cur_instr != 'h00004081) begin
+			$spike_get_pc(cur_pc);
+			$spike_run_steps(1);
+			$spike_get_instr(cur_pc, cur_instr);
+		end
+		*/
 		for (i=0; i<10; i++) begin
 			$spike_get_pc(cur_pc);
 			$spike_run_steps(1);

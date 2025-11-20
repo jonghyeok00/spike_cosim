@@ -93,7 +93,7 @@ extern "C" {
 
         try {
             spike_cfg_instance = new cfg_t();
-			spike_cfg_instance->isa = "RV32I";
+			spike_cfg_instance->isa = "RV32IMC";
             //spike_cfg_instance->hartids.push_back(0);
             spike_cfg_instance->bootargs = nullptr;
 			spike_cfg_instance->priv = DEFAULT_PRIV;
@@ -214,10 +214,10 @@ extern "C" {
 			return 1;
 		}
 		vpiHandle arg = vpi_scan(args_iter);
-		s_vpi_value val;
-		val.format = vpiIntVal;
-		vpi_get_value(arg, &val);
-		int steps = val.value.integer;
+		s_vpi_value arg_val;
+		arg_val.format = vpiIntVal;
+		vpi_get_value(arg, &arg_val);
+		int steps = arg_val.value.integer;
 		vpi_free_object(args_iter);
 
 		if (!spike_sim_instance || !spike_cpu_instance) {
@@ -231,9 +231,9 @@ extern "C" {
 		}
 
 		// Run steps: call cpu->step repeatedly (many Spike versions accept step(1))
-		for (int i = 0; i < steps; ++i) {
-			spike_cpu_instance->step(1);
-		}
+		//for (int i = 0; i < steps; ++i) {
+			spike_cpu_instance->step(steps);
+		//}
 
 		vpi_printf("[VPI_INFO] $spike_run_steps: ran %d step(s)\n", steps);
 
@@ -557,7 +557,7 @@ extern "C" {
 
         // --- cfg_t 객체 생성 및 설정 ---
         spike_cfg_instance = new cfg_t(); // 실제 Spike cfg_t에 맞게 초기화
-        spike_cfg_instance->isa = "RV32I"; // "RV32IMAC" 등으로 실제 필요한 ISA 설정
+        spike_cfg_instance->isa = "RV32IMC"; // "RV32IMAC" 등으로 실제 필요한 ISA 설정
         spike_cfg_instance->hartids.push_back(0); // 하트 ID (예: 0번 하트)
         spike_cfg_instance->bootargs = nullptr; // 또는 필요에 따라 "bootargs=..." 설정
         // 실제 Spike cfg_t에는 훨씬 더 많은 멤버들이 있으며, 필요한 경우 여기에 추가 설정

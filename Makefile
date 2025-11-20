@@ -169,7 +169,7 @@ build2:
 	mkdir -p $(TEST_DIR)/obj
 	riscv32-unknown-elf-gcc -static -c -march=rv32imc -mabi=ilp32 -o $(TEST_DIR)/obj/start.o $(TEST_DIR)/start_JS.S
 	riscv32-unknown-elf-gcc -static -c -march=rv32imc -mabi=ilp32 -Os -o $(TEST_DIR)/obj/riscv_arithmetic_basic_test_0.o $(TEST_DIR)/riscv_arithmetic_basic_test_0_JS.S
-	riscv32-unknown-elf-gcc -march=rv32im -mabi=ilp32 -Os -ffreestanding -nostdlib -Wl,--build-id=none,-Bstatic,-T,$(TEST_DIR)/sections_JS.lds,--strip-debug \
+	riscv32-unknown-elf-gcc -march=rv32imc -mabi=ilp32 -Os -ffreestanding -nostdlib -Wl,--build-id=none,-Bstatic,-T,$(TEST_DIR)/sections_JS.lds,--strip-debug \
 								   -I./tests \
 								   -o $(TEST_DIR)/obj/firmware.elf $(TEST_DIR)/obj/start.o $(TEST_DIR)/obj/riscv_arithmetic_basic_test_0.o \
 								   -lc -lgcc
@@ -184,26 +184,28 @@ build2:
 
 spikelog:
 	# instruction log
-	spike -l --log=dump/spike_inst_log --isa=rv32imc /opt/riscv/riscv32-unknown-elf/bin/pk $(TEST_DIR)/obj/firmware.elf
+	spike -l --log=dump/spike_inst_log --isa=rv32imc /opt/riscv/riscv32-unknown-elf/bin/pk tests/arith_basic_test/obj/firmware.elf
 	# reg/mem log
 #spike --log-commits --log=spike_reg_log --isa=RV32IMC /opt/riscv/riscv32-unknown-elf/bin/pk $(TEST_DIR)/obj/firmware.elf
+
+spikelogconv:
+	#spike_*_log -> spike_conv_*_log
+	python3 scripts/convert.py dump/spike_inst_log dump/spike_conv_inst_log
 
 dutlog:
 	#testbench.trace -> tracelog
 	python3 scripts/showtrace.py dump/testbench.trace tests/arith_basic_test/obj/firmware.elf | tee dump/dut_log
 
-spikelogconv:
-	#spike_*_log -> spike_conv_*_log
-	python3 scripts/convert.py dump/spike_inst_log dump/spike_conv_inst_log
+compare:
 	# compare dut_log/spike_conv_*_log
 	python3 scripts/compare.py dump/dut_log dump/spike_conv_inst_log 
 
-
-
-logcompare:
-	# converted_log(spike), tracelog(dut) compare
-	python3 convert.py firmware/spike_inst_log ./converted_spike_inst_log
-
+compareall:
+	spike -l --log=dump/spike_inst_log --isa=rv32imc /opt/riscv/riscv32-unknown-elf/bin/pk tests/arith_basic_test/obj/firmware.elf
+	python3 scripts/convert.py dump/spike_inst_log dump/spike_conv_inst_log
+	python3 scripts/showtrace.py dump/testbench.trace tests/arith_basic_test/obj/firmware.elf | tee dump/dut_log
+	python3 scripts/compare.py dump/dut_log dump/spike_conv_inst_log 
+	
 
 libspikeso:
 	# make shared object file
