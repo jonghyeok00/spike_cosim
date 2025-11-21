@@ -184,7 +184,7 @@ build2:
 
 spikelog:
 	# instruction log
-	spike -l --log=dump/spike_inst_log --isa=rv32imc /opt/riscv/riscv32-unknown-elf/bin/pk tests/arith_basic_test/obj/firmware.elf
+	spike -l --log=dump/spike_inst_log --isa=rv32imc /opt/riscv/riscv32-unknown-elf/bin/pk $(TEST_DIR)/obj/firmware.elf
 	# reg/mem log
 #spike --log-commits --log=spike_reg_log --isa=RV32IMC /opt/riscv/riscv32-unknown-elf/bin/pk $(TEST_DIR)/obj/firmware.elf
 
@@ -209,7 +209,7 @@ compareall:
 
 libspikeso:
 	# make shared object file
-	g++ scripts/spike_dpi.cc -o scripts/libspike.so -fPIC -shared -std=c++17 \
+	g++ scripts/spike_dpi_thread.cc -o scripts/libspike.so -fPIC -shared -std=c++17 \
 					-I/opt/riscv/include -I/opt/riscv/include/riscv -I/opt/riscv/include/fesvr -I/usr/local/include/iverilog -I/usr/share/verilator/include/vltstd \
 					-L/opt/riscv/include -L/opt/riscv/include/riscv -L/opt/riscv/include/fesvr -L/usr/local/include/iverilog -L/usr/share/verilator/include/vltstd \
 					-L/opt/riscv/lib -lriscv -lfesvr -lpthread -lgmp -lmpfr -lmpc -ldl -Wl,-rpath=/opt/riscv/lib \
@@ -220,6 +220,7 @@ libspikeso:
 sim:
 	mkdir -p $(TB_HOME)/dump
 	iverilog -g2012 -o top/testbench.vvp top/testbench.v top/picorv32.v -DVPI_WRAPPER -DCOMPRESSED_ISA
+	#iverilog -g2012 -o top/testbench.vvp top/testbench.v top/picorv32.v -DVPI_WRAPPER
 	vvp -M . -m scripts/libspike top/testbench.vvp +trace +vcd
 
 all:

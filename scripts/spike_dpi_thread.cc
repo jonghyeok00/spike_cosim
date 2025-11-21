@@ -2,6 +2,10 @@
 #include <string>
 #include <stdint.h>
 #include <iostream>
+#include <thread>
+#include <vector>
+#include <string>
+#include <atomic>
 
 /* ============== Spike C++ Class Definition =============== */
 #include "sim.h"
@@ -13,8 +17,7 @@
 #include "htif.h"
 #include "mmu.h"
 #include "decode.h"
-#include <vector>
-#include <string>
+#include "device.h"
 /* ========================================================= */
 
 #ifdef VPI_WRAPPER
@@ -27,101 +30,39 @@
 static sim_t* spike_sim_instance = nullptr;
 static processor_t* spike_cpu_instance = nullptr;
 static cfg_t* spike_cfg_instance = nullptr;
+static std::thread spike_thread;
 static htif_t* spike_htif_instance = nullptr;
+static std::atomic<bool> thread_running(false);
 
-static std::vector<std::pair<reg_t, abstract_mem_t*>> make_mems(const std::vector<mem_cfg_t> &layout)
-{
-  std::vector<std::pair<reg_t, abstract_mem_t*>> mems;
-  mems.reserve(layout.size());
-  for (const auto &cfg : layout) {
-    mems.push_back(std::make_pair(cfg.get_base(), new mem_t(cfg.get_size())));
+
+static std::vector<std::pair<reg_t, abstract_mem_t*>> make_mems(const std::vector<mem_cfg_t> &layout) {
+	std::vector<std::pair<reg_t, abstract_mem_t*>> mems;
+  	mems.reserve(layout.size());
+  	for (const auto &cfg : layout) {
+    	mems.push_back(std::make_pair(cfg.get_base(), new mem_t(cfg.get_size())));
 
     	vpi_printf("[TS_DEBUG] cfg.get_base() : %lx, cfg.get_size() : %lx\n", cfg.get_base(), cfg.get_size());
-  }
-  return mems;
-}
-
-/*
-void spike_user_step(sim_t* sim) {
-    //------------------------------------
-    // 1) CPU step (processor_t::step)
-    //------------------------------------
-    processor_t* cpu = sim->get_core(0);
-    cpu->step(1);
-
-    //------------------------------------
-    // 2) HTIF tohost/fromhost 처리
-    //------------------------------------
-    // Spike에서 htif 와 fesvr 는 보통 sim->htif 또는 sim->sims[0]->htif 형태임
-	static htif_t* htif; // 실제 코드 기반으로 변경 필요
-
-    if (htif) {
-        // 내부적으로 pk 가 tohost에 write 하면, 여기서 처리해야 진행됨
-        //htif->tick(); // API가 tick() 또는 poll() 또는 process() 일 수 있음
-        htif->run(); // API가 tick() 또는 poll() 또는 process() 일 수 있음
-    }
-
-    //------------------------------------
-    // 3) CLINT timer 처리 (mtime 증가 + interrupt source)
-    //------------------------------------
-    //auto* clint = sim->get_clint(); // 실제 멤버명 맞춰 바꿔야 함
-    static sim_t* sim;
-    if (clint) {
-        clint->tick(); // 혹은 increment_time(), step() 등
-    }
-
-    //------------------------------------
-    // 4) PLIC interrupt 처리
-    //------------------------------------
-    auto* plic = sim->get_plic();
-    if (plic) {
-        plic->tick(); // 혹은 step(), service()
-    }
-
-    //------------------------------------
-    // 5) MMIO devices 처리
-    //------------------------------------
-    auto& devs = sim->get_devices(); // 실제 멤버명에 맞게 바꿔야함
-    for (auto* dev : devs) {
-        if (!dev) continue;
-
-        if (dev->has_tick())
-            dev->tick();
-        else if (dev->has_step())
-            dev->step();
-        // 아니면 no-op
-    }
-
-    //------------------------------------
-    // 6) 시간 전진 (Spike 내부 time 변수)
-    //------------------------------------
-    // 예: sim->advance(1);
-    if (sim->has_time()) {
-        sim->advance(1);
-    }
+  	}
+  	return mems;
 }
 
 
-
-void spike_lockstep_step(sim_t* sim) {
-	processor_t* cpu = sim->get_core(0);
-	cpu->step(1);
-
-	reg_t rtc_ticks = 1 / INSNS_PER_RTC_TICK;
-	if (rtc_ticks == 0) rtc_ticks = 1;
-
-    //auto& devs = sim->devices();
-	for (auto* dev : sim->devices) {
-        if (!dev) continue;
-
-        if (dev->has_tick())
-            dev->tick();
-        else if (dev->has_step())
-            dev->step();
-        // 아니면 no-op
+static void spike_run_thread_func() {
+    try {
+        thread_running.store(true);
+        // sim->run() is blocking until program exit or trap; it's the main event loop (fesvr+devices+cores).
+		vpi_printf("[VPI_INFO] Starting spike_sim_instance->run()...\n");
+        spike_sim_instance->run();
+		vpi_printf("[VPI_INFO] spike_sim_instance->run() returned. \n");
+    } catch (const std::exception &e) {
+        std::cerr << "[Spike VPI thread] exception in run(): " << e.what() << std::endl;
+    } catch (...) {
+        std::cerr << "[Spike VPI thread] unknown exception in run()" << std::endl;
     }
+    thread_running.store(false);
 }
-*/
+
+
 
 extern "C" {
 
@@ -206,8 +147,10 @@ extern "C" {
 			//args_vec.push_back("--isa=rv32i");
             args_vec.push_back("/opt/riscv/riscv32-unknown-elf/bin/pk");
             args_vec.push_back(elf_path);
-            args_vec.push_back("--verbose");
-            
+            //args_vec.push_back("--verbose");
+           
+			std::string spike_log_output_file = "spike_trace_vpi.log";
+
 			// --- sim_t 인스턴스 생성 ---
             spike_sim_instance = new sim_t(
                 spike_cfg_instance,         // const cfg_t *cfg
@@ -216,7 +159,8 @@ extern "C" {
                 plugin_device_factories_dummy, // const std::vector<device_factory_sargs_t>& plugin_device_factories
                 args_vec,                   // const std::vector<std::string>& args
                 dm_config,                  // const debug_module_config_t &dm_config (실제 dm_config 객체를 전달)
-                log_path_dummy,             // const char *log_path
+ 				  spike_log_output_file.c_str(),
+                  //log_path_dummy,             // const char *log_path
                 dtb_enabled_dummy,          // bool dtb_enabled
                 dtb_file_dummy,             // const char *dtb_file
                 socket_enabled_dummy,       // bool socket_enabled
@@ -271,8 +215,19 @@ extern "C" {
             return 1;
         }*/
 
-		spike_sim_instance->run();
+		//spike_sim_instance->run();
 		//spike_sim_instance->start();
+
+    
+		// ----------- Launch background thread running sim->run() -----------
+	    try {
+    	    spike_thread = std::thread(spike_run_thread_func);
+        	// optionally detach: we keep track and join in cleanup if possible
+	    } catch (const std::exception &e) {
+		    vpi_printf("[VPI ERROR] $spike_init: fail to spawn thread: %s\n", e.what());
+		    // leave sim allocated (so user can inspect), but not running
+		    return 1;
+		}
 
         return 0; // 성공 반환
     }
@@ -312,10 +267,8 @@ extern "C" {
 
 		// Run steps: call cpu->step repeatedly (many Spike versions accept step(1))
 		//for (int i = 0; i < steps; ++i) {
-			//TODO spike_cpu_instance->step(steps);
+			spike_cpu_instance->step(steps);
 		//}
-
-						
 
 		//vpi_printf("[VPI_INFO] $spike_run_steps: ran %d step(s)\n", steps);
 
@@ -464,7 +417,7 @@ extern "C" {
 			
 	    } catch (trap_t& t) {
 	        // 메모리 접근 오류 (페이지 폴트 등) 처리
-	        vpi_printf("[VPI_ERROR] $spike_get_instr: Trap occurred during instruction fetch at 0x%llx (cause: %llu).\n", (long long)target_pc, (long long)t.cause());
+	        vpi_printf("[VPI_ERROR] $spike_get_instr: Trap occurred during instruction fetch at PC 0x%08x (cause: %llu).\n", target_pc, (long long)t.cause());
 	        encoded_instruction = 0xFFFFFFFF; // 에러 시 기본값 또는 에러 코드 설정
 	    }
 	

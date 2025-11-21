@@ -305,61 +305,78 @@ module picorv32_wrapper #(
 
 	// ************** Spike custom functions **************************
 	integer i, j;
+	integer cnt = 0;
 	reg [31:0] cur_pc, cur_instr;
 
 	initial begin
 		@(posedge resetn);
 		$display("=========================== SPIKE SIMULATION RUN ===========================");
 		$display("Reset is released at time %.1f[ns]", $time);
-		$spike_init("tests/arith_basic_test/obj/firmware.elf");
-		//$spike_init("tests/pico_test/obj/firmware.elf");
-		#10;
-	
-		$spike_run_steps(205500);
-		$spike_get_pc(cur_pc);
-	
-		
-		while (cur_pc != 'h00000000) begin
-			$spike_get_pc(cur_pc);
-			$spike_run_steps(1);
-		end
-	
-		$display("[Verilog] Current PC value: 0x%08x", cur_pc);
-		
-		/*
-		while (cur_instr != 'h00004081) begin
-			$spike_get_pc(cur_pc);
-			$spike_run_steps(1);
-			$spike_get_instr(cur_pc, cur_instr);
-		end
-		*/
-		for (i=0; i<10; i++) begin
-			$spike_get_pc(cur_pc);
-			$spike_run_steps(1);
-			$spike_get_instr(cur_pc, cur_instr);
-		end
+		//$spike_init("tests/arith_basic_test/obj/firmware.elf");
 
-		/*
-		$spike_get_pc(cur_pc);
-		$display("[Verilog] Current PC value: 0x%08x", cur_pc);
-		$spike_run_steps(1);
 
-		$spike_get_pc(cur_pc);
-		$display("[Verilog] Current PC value: 0x%08x", cur_pc);
-		$spike_run_steps(1);
-		*/
-	
-		/*
-		for (j=0; j<3; j++) begin // run command step
-			$spike_get_pc(cur_pc);
-			$spike_run_steps(1);
-			$spike_get_instr(cur_pc, cur_instr);
-			//for (i=0; i<32; i=i+1) begin
-			//	$spike_get_reg(i);
+		//fork 
+			//begin
+				$spike_init("tests/arith_basic_test/obj/firmware.elf");
+				//#10;
 			//end
-		end
-		*/
+			//begin	
+				repeat (100) begin
+					$spike_get_pc(cur_pc);
+					$spike_get_instr(cur_pc, cur_instr);
+				end
+			
+				/*
+				repeat(10) begin
+					cnt++;
+					$display("[Verilog] Step count : %0d", cnt);
+					$spike_get_pc(cur_pc);
+					$spike_run_steps(1);
+					$spike_get_instr(cur_pc, cur_instr);
+				end
+				*/
+				
+				//$spike_get_pc(cur_pc);
+				/*
+				while (cur_pc != 'h000004dc) begin
+					cnt++;
+					$display("[Verilog] Step count : %0d", cnt);
+					$spike_get_pc(cur_pc);
+					$spike_run_steps(1);
+					$spike_get_instr(cur_pc, cur_instr);
+				end
+				*/
+			//end	
+		//join_any
 
+
+			/*
+			begin
+				$spike_get_pc(cur_pc);
+				//$spike_run_steps(1);
+				//cnt++;
+		
+				//while (cur_pc != 'h0000_074e) begin
+				//while (cur_pc != 'h0000_0480) begin
+				//while (cur_pc != 'h8000_3a22) begin
+				while (cnt != 205700) begin
+					cnt++;
+					$display("[Verilog] Step count : %0d", cnt);
+					$spike_get_pc(cur_pc);
+					$spike_run_steps(1);
+					$spike_get_instr(cur_pc, cur_instr);
+				end
+		
+				$display("[Verilog] Current PC value: 0x%08x", cur_pc);
+		
+				for (i=0; i<10; i++) begin
+					$spike_get_pc(cur_pc);
+					$spike_run_steps(1);
+					$spike_get_instr(cur_pc, cur_instr);
+				end
+			end
+			*/
+		
 
 		$display("============================================================================");
 	end	

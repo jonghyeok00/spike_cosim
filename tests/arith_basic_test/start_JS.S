@@ -390,6 +390,7 @@ start:
 	jal ra,init
 test:
 
+/*
 	lui a0,0x10000000>>12
     addi a1,zero,'D'
     addi a2,zero,'O'
@@ -406,7 +407,7 @@ test:
 	li a0,0x20000000
 	li a1,123456789
 	sw a1,0(a0)
-
+*/
 
 	ebreak
 #ifdef ENABLE_RVTST
