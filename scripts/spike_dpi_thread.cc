@@ -1,11 +1,13 @@
 /////////#include "spike_main.h" // spike 내부 헤더 (또는 직접 정의)
 #include <string>
 #include <stdint.h>
-#include <iostream>
 #include <thread>
+#include <mutex>
+#include <atomic>
 #include <vector>
 #include <string>
-#include <atomic>
+#include <iostream>
+#include <exception>
 
 /* ============== Spike C++ Class Definition =============== */
 #include "sim.h"
@@ -20,6 +22,7 @@
 #include "device.h"
 /* ========================================================= */
 
+
 #ifdef VPI_WRAPPER
     #include "vpi_user.h"
 #elif DPI_WRAPPER
@@ -30,26 +33,16 @@
 static sim_t* spike_sim_instance = nullptr;
 static processor_t* spike_cpu_instance = nullptr;
 static cfg_t* spike_cfg_instance = nullptr;
+
 static std::thread spike_thread;
-static htif_t* spike_htif_instance = nullptr;
-static std::atomic<bool> thread_running(false);
+static std::mutex spike_mutex;
+static std::atomic<bool> spike_thread_running(false);
+static std::atomic<bool> spike_thread_should_stop(false);
 
 
-static std::vector<std::pair<reg_t, abstract_mem_t*>> make_mems(const std::vector<mem_cfg_t> &layout) {
-	std::vector<std::pair<reg_t, abstract_mem_t*>> mems;
-  	mems.reserve(layout.size());
-  	for (const auto &cfg : layout) {
-    	mems.push_back(std::make_pair(cfg.get_base(), new mem_t(cfg.get_size())));
-
-    	vpi_printf("[TS_DEBUG] cfg.get_base() : %lx, cfg.get_size() : %lx\n", cfg.get_base(), cfg.get_size());
-  	}
-  	return mems;
-}
-
-
-static void spike_run_thread_func() {
+static void spike_run_thread() {
     try {
-        thread_running.store(true);
+        spike_thread_running.store(true);
         // sim->run() is blocking until program exit or trap; it's the main event loop (fesvr+devices+cores).
 		vpi_printf("[VPI_INFO] Starting spike_sim_instance->run()...\n");
         spike_sim_instance->run();
@@ -59,9 +52,8 @@ static void spike_run_thread_func() {
     } catch (...) {
         std::cerr << "[Spike VPI thread] unknown exception in run()" << std::endl;
     }
-    thread_running.store(false);
+    spike_thread_running.store(false);
 }
-
 
 
 extern "C" {
@@ -98,6 +90,8 @@ extern "C" {
         // 6. 사용 후에는 VPI 반복자를 해제합니다.
         vpi_free_object(arg_iterator);
 
+		std::lock_guard<std::mutex> g(spike_mutex);
+
         // 기존 인스턴스가 있다면 재초기화를 위해 해제합니다.
         if (spike_sim_instance) {
             vpi_printf("[VPI WARN] Spike 시뮬레이터가 이미 초기화되었습니다. 기존 인스턴스를 해제하고 재초기화합니다.\n");
@@ -113,7 +107,7 @@ extern "C" {
 
         try {
             spike_cfg_instance = new cfg_t();
-			spike_cfg_instance->isa = "rv32IMC";
+			spike_cfg_instance->isa = "RV32IMC";
             spike_cfg_instance->hartids.push_back(0);
             spike_cfg_instance->bootargs = nullptr;
 			spike_cfg_instance->priv = DEFAULT_PRIV;
@@ -220,17 +214,84 @@ extern "C" {
 
     
 		// ----------- Launch background thread running sim->run() -----------
+		/*
 	    try {
-    	    spike_thread = std::thread(spike_run_thread_func);
+			spike_thread_should_stop.store(false);
+    	    spike_thread = std::thread(spike_run_thread);
         	// optionally detach: we keep track and join in cleanup if possible
 	    } catch (const std::exception &e) {
 		    vpi_printf("[VPI ERROR] $spike_init: fail to spawn thread: %s\n", e.what());
 		    // leave sim allocated (so user can inspect), but not running
 		    return 1;
 		}
+		*/
 
         return 0; // 성공 반환
     }
+
+	PLI_INT32 spike_start_vpi_calltf(PLI_BYTE8 *user_data) {
+	    try {
+			spike_thread_should_stop.store(false);
+    	    spike_thread = std::thread(spike_run_thread);
+			vpi_printf("[VPI_INFO] $spike_start: start run thread.\n");
+	    } catch (const std::exception &e) {
+		    vpi_printf("[VPI ERROR] $spike_start: fail to spawn thread: %s\n", e.what());
+		    return 1;
+		}
+
+     	return 0;
+    }
+
+
+	// ---------- VPI task: $spike_stop() ----------
+	PLI_INT32 spike_stop_vpi_calltf(PLI_BYTE8 *user_data) {
+	    std::lock_guard<std::mutex> g(spike_mutex);
+	    if (!spike_sim_instance) {
+	        vpi_printf("[VPI] $spike_stop: not initialized\n");
+	        return 0;
+	    }
+	
+	    // Try to request stop if sim_t exposes such an API (many versions don't)
+	    try {
+	        // --- ADAPT HERE: if your sim_t supports stop(), call it. Otherwise rely on thread join after program exit.
+	        // spike_sim->stop(); // uncomment if available
+
+	    } catch(...) {}
+	
+	    // If thread is joinable, join (may block until run() returns)
+	    if (spike_thread.joinable()) {
+	        vpi_printf("[VPI] $spike_stop: joining spike thread (may block)\n");
+	        spike_thread.join();
+	    }
+	
+	    // cleanup
+	    delete spike_sim_instance;
+	    spike_sim_instance = nullptr;
+	    spike_cpu_instance = nullptr;
+	    if (spike_cfg_instance) { delete spike_cfg_instance; spike_cfg_instance = nullptr; }
+	
+	    vpi_printf("[VPI] $spike_stop: cleaned up\n");
+	    return 0;
+	}
+
+
+	/*
+	// VPI: set PC trigger
+	PLI_INT32 vpi_spike_set_pc_trigger_calltf(char*user) {
+		s_vpi_value val;
+		val.format = vpiIntVal;
+		vpi_handle arg_iter = vpi_iterate(vpiArgument,NULL);
+		vpi_handle arg = vpi_scan(arg_iter);
+		vpi_get_value(arg,&val);
+	
+		pc_trigger = (uint64_t)val.value.integer;
+		pc_trigger_valid = true;
+		pc_trigger_reached = false;
+	
+		return 0;
+	}
+	*/
+
 
 
 	// ---------- VPI: $spike_run_steps(N) ----------
@@ -267,6 +328,7 @@ extern "C" {
 
 		// Run steps: call cpu->step repeatedly (many Spike versions accept step(1))
 		//for (int i = 0; i < steps; ++i) {
+		std::lock_guard<std::mutex> g(spike_mutex);
 			spike_cpu_instance->step(steps);
 		//}
 
@@ -402,6 +464,9 @@ extern "C" {
 	
 	    // 7. Spike의 MMU를 통해 해당 PC 주소의 인스트럭션 가져오기
 	    try {
+
+			std::lock_guard<std::mutex> g(spike_mutex);
+
 	        // processor_t에서 mmu_t 객체를 얻습니다.
 	        mmu_t* mmu = spike_cpu_instance->get_mmu();
 			
@@ -501,6 +566,29 @@ extern "C" {
         tf_data_init.user_data = NULL;
         tf_data_init.tfname = "$spike_init";
         vpi_register_systf(&tf_data_init);
+
+		// Task 2-1: $spike_start
+        s_vpi_systf_data tf_data_start;
+        tf_data_start.type = vpiSysTask;
+        tf_data_start.sysfunctype = 0;
+        tf_data_start.calltf = spike_start_vpi_calltf;
+        tf_data_start.compiletf = NULL;
+        tf_data_start.sizetf = NULL;
+        tf_data_start.user_data = NULL;
+        tf_data_start.tfname = "$spike_start";
+        vpi_register_systf(&tf_data_start);
+
+		 // Task 2-2: $spike_stop
+        s_vpi_systf_data tf_data_stop;
+        tf_data_stop.type = vpiSysTask;
+        tf_data_stop.sysfunctype = 0;
+        tf_data_stop.calltf = spike_stop_vpi_calltf;
+        tf_data_stop.compiletf = NULL;
+        tf_data_stop.sizetf = NULL;
+        tf_data_stop.user_data = NULL;
+        tf_data_stop.tfname = "$spike_stop";
+        vpi_register_systf(&tf_data_stop);
+
 
         // Task 2: $spike_run_steps
         s_vpi_systf_data tf_data_run;

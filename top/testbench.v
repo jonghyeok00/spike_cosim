@@ -318,14 +318,23 @@ module picorv32_wrapper #(
 		//fork 
 			//begin
 				$spike_init("tests/arith_basic_test/obj/firmware.elf");
-				//#10;
+				#500;
 			//end
 			//begin	
+		
+				//$spike_set_start_pc(32'h80000000);  // 내가 원하는 PC 설정
+
+				$spike_start();
+				#100;
+			
 				repeat (100) begin
+					#10;
 					$spike_get_pc(cur_pc);
+					//$spike_run_steps(1);
 					$spike_get_instr(cur_pc, cur_instr);
 				end
-			
+		
+				$spike_stop();
 				/*
 				repeat(10) begin
 					cnt++;
