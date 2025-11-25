@@ -355,8 +355,8 @@ module picorv32_wrapper #(
 				//repeat(100) begin
 				
 				//repeat(182050) begin //TODO
-				//repeat(230000) begin //TODO
-				repeat(100) begin //TODO
+				repeat(230000) begin //TODO
+				//repeat(100) begin //TODO
 					cnt++;
 					//$display("[Verilog] Step count : %0d", cnt);
 					$spike_get_pc(cur_pc);
