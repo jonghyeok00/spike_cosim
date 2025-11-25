@@ -104,7 +104,18 @@ void htif_t::step_once() {
 	   을 주석 처리 후,
 	   public 으로 옮길 것.
 
- 
+
+	2-4) /home/jhpark/works/cis/riscv-isa-sim/riscv/riscv/sim.h
+
+	   전:
+	 	static const size_t IㅑNTERLEAVE = 5000; 
+		static const size_t INSNS_PER_RTC_TICK = 100;
+
+       후: 둘다 값을 1 로 바꿀 것
+	 	static const size_t IㅑNTERLEAVE = 1; 
+		static const size_t INSNS_PER_RTC_TICK = 1;
+
+
 3. source env.sh 후, make all 을 통해 시뮬레이션 실행
 
 	dump/spike_dump.log : 내가 원하는 step 만큼 PC, instruction 뽑히도록 함.
