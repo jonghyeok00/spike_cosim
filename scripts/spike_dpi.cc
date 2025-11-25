@@ -7,10 +7,11 @@
 #include "sim.h"
 #include "cfg.h"
 #include "processor.h"
-#include "memif.h"
 #include "elfloader.h"
 #include "elf.h"
 #include "htif.h"
+#include "common.h"
+#include "memif.h"
 #include "mmu.h"
 #include "decode.h"
 #include <vector>
@@ -41,90 +42,81 @@ static std::vector<std::pair<reg_t, abstract_mem_t*>> make_mems(const std::vecto
   return mems;
 }
 
+
 /*
-void spike_user_step(sim_t* sim) {
-    //------------------------------------
-    // 1) CPU step (processor_t::step)
-    //------------------------------------
-    processor_t* cpu = sim->get_core(0);
-    cpu->step(1);
+void spike_htif_step(sim_t* sim) {
+	htif_t* htif = sim->get_htif();
+	if (!htif)
+		return 1;
 
-    //------------------------------------
-    // 2) HTIF tohost/fromhost 처리
-    //------------------------------------
-    // Spike에서 htif 와 fesvr 는 보통 sim->htif 또는 sim->sims[0]->htif 형태임
-	static htif_t* htif; // 실제 코드 기반으로 변경 필요
+	auto& mem = htif->mem; // htif 메모리
+	auto& device_list = htif->device_list;
 
-    if (htif) {
-        // 내부적으로 pk 가 tohost에 write 하면, 여기서 처리해야 진행됨
-        //htif->tick(); // API가 tick() 또는 poll() 또는 process() 일 수 있음
-        htif->run(); // API가 tick() 또는 poll() 또는 process() 일 수 있음
-    }
+	uint64_t tohost = 0;
+	static std::queue<uint64_t> fromhost_queue;
 
-    //------------------------------------
-    // 3) CLINT timer 처리 (mtime 증가 + interrupt source)
-    //------------------------------------
-    //auto* clint = sim->get_clint(); // 실제 멤버명 맞춰 바꿔야 함
-    static sim_t* sim;
-    if (clint) {
-        clint->tick(); // 혹은 increment_time(), step() 등
-    }
+// ------------------------
+// (1) tohost 읽기
+// ------------------------
+	try {
+		if (htif->tohost_addr) {
+			auto raw = mem.read_uint64(htif->tohost_addr);
+			tohost = htif->from_target(raw);
 
-    //------------------------------------
-    // 4) PLIC interrupt 처리
-    //------------------------------------
-    auto* plic = sim->get_plic();
-    if (plic) {
-        plic->tick(); // 혹은 step(), service()
-    }
+			if (tohost != 0) {
+				mem.write_uint64(htif->tohost_addr, target_endian<uint64_t>::zero);
+			}
+		}
+	} catch (const mem_trap_t& t) {
+		htif->bad_address("accessing tohost", t.get_tval());
+	}
 
-    //------------------------------------
-    // 5) MMIO devices 처리
-    //------------------------------------
-    auto& devs = sim->get_devices(); // 실제 멤버명에 맞게 바꿔야함
-    for (auto* dev : devs) {
-        if (!dev) continue;
+// ------------------------
+// (2) 명령 처리 / idle
+// ------------------------
+	try {
+		if (tohost != 0) {
 
-        if (dev->has_tick())
-            dev->tick();
-        else if (dev->has_step())
-            dev->step();
-        // 아니면 no-op
-    }
+		auto enq = [&](uint64_t x) {
+		  fromhost_queue.push(x);
+		};
 
-    //------------------------------------
-    // 6) 시간 전진 (Spike 내부 time 변수)
-    //------------------------------------
-    // 예: sim->advance(1);
-    if (sim->has_time()) {
-        sim->advance(1);
-    }
-}
+		command_t cmd(mem, tohost, enq);
+		device_list.handle_command(cmd);
+	} else {
+		htif->idle();
+	}
 
+	device_list.tick();
 
+// ------------------------
+// (3) fromhost 쓰기
+// ------------------------
+	if (!fromhost_queue.empty()) {
 
-void spike_lockstep_step(sim_t* sim) {
-	processor_t* cpu = sim->get_core(0);
-	cpu->step(1);
+		auto raw = mem.read_uint64(htif->fromhost_addr);
+		uint64_t curr = htif->from_target(raw);
 
-	reg_t rtc_ticks = 1 / INSNS_PER_RTC_TICK;
-	if (rtc_ticks == 0) rtc_ticks = 1;
+		if (curr == 0) {
+			uint64_t val = fromhost_queue.front();
+			fromhost_queue.pop();
 
-    //auto& devs = sim->devices();
-	for (auto* dev : sim->devices) {
-        if (!dev) continue;
+			mem.write_uint64(htif->fromhost_addr, htif->to_target(val));
+		}
+	}
 
-        if (dev->has_tick())
-            dev->tick();
-        else if (dev->has_step())
-            dev->step();
-        // 아니면 no-op
-    }
+	} catch (const mem_trap_t& t) {
+		std::stringstream s;
+		s << std::hex << tohost;
+		htif->bad_address("host accessing memory (tohost=" + s.str() + ")", t.get_tval());
+	}
 }
 */
 
-extern "C" {
 
+
+
+extern "C" {
 #ifdef VPI_WRAPPER
 	// ---------- VPI: $spike_init(elf_path_str) ----------
   	// Task: Initialize simulator and Load ELF file.
@@ -194,7 +186,8 @@ extern "C" {
 
             std::vector<device_factory_sargs_t> plugin_device_factories_dummy; // 현재는 더미.
             debug_module_config_t dm_config; // const 레퍼런스로 전달되므로 실제 객체가 필요합니다.
-            const char *log_path_dummy = nullptr;
+            //const char *log_path_dummy = nullptr;
+			const char *log_path_dummy = "dump/spike_trace_all_by_API.log";
             bool dtb_enabled_dummy = true; //TODO
             const char *dtb_file_dummy = nullptr;
             bool socket_enabled_dummy = false; //TODO
@@ -235,13 +228,17 @@ extern "C" {
 			spike_sim_instance->set_debug(false); // spike debug mode
             spike_cpu_instance = spike_sim_instance->get_core(0);
 			spike_sim_instance->get_core(0)->reset();
-            
+			
+			spike_cpu_instance->enable_log_commits(); //TODO
+           
 			if (!spike_cpu_instance) {
                 vpi_printf("[VPI ERROR] $spike_init: CPU 코어 인스턴스를 가져오지 못했습니다. Spike 초기화 실패.\n");
                 if (spike_sim_instance) { delete spike_sim_instance; spike_sim_instance = nullptr; }
                 if (spike_cfg_instance) { delete spike_cfg_instance; spike_cfg_instance = nullptr; }
                 return 1; // 실패 반환
             }
+
+			//spike_cpu_instance->enable_log_commits(); //TODO
 
 			//reg_t entry = 0;
 			//memif_t memif(spike_sim_instance);
@@ -271,8 +268,8 @@ extern "C" {
             return 1;
         }*/
 
-		spike_sim_instance->run();
-		//spike_sim_instance->start();
+		//spike_sim_instance->run();
+		spike_sim_instance->start();
 
         return 0; // 성공 반환
     }
@@ -312,10 +309,14 @@ extern "C" {
 
 		// Run steps: call cpu->step repeatedly (many Spike versions accept step(1))
 		//for (int i = 0; i < steps; ++i) {
-			//TODO spike_cpu_instance->step(steps);
-		//}
-
-						
+			spike_sim_instance->step(steps);
+			if (!spike_sim_instance) {
+				vpi_printf("[VPI ERROR] $spike_run_steps: spike not initialized\n");
+			}
+			else {
+				spike_sim_instance->step_once();
+			}
+		//}	
 
 		//vpi_printf("[VPI_INFO] $spike_run_steps: ran %d step(s)\n", steps);
 
@@ -323,23 +324,6 @@ extern "C" {
 	}
 
 
-
-	// ---------- VPI: $spike_get_pc ----------
-	// Task: Print PC value
-	/*
-	PLI_INT32 spike_get_pc_vpi_calltf(PLI_BYTE8* user_data) {
-		if (!spike_sim_instance || !spike_cpu_instance) {
-			vpi_printf("[VPI_ERROR] $spike_get_pc: Spike not initialized\n");
-			return 1;
-		}
-
-		//reg_t pc = spike_cpu_instance->get_state()->pc;
-        uint32_t pc = (uint32_t)spike_cpu_instance->get_state()->pc;
-		vpi_printf("[VPI_INFO] PC = 0x%08x\n", pc);
-
-		return 0;
-	}
-	*/
 
 	PLI_INT32 spike_get_pc_vpi_calltf(PLI_BYTE8* user_data) {
 	    vpiHandle tf_call_h;
@@ -455,7 +439,7 @@ extern "C" {
 	        if (mmu) {
 			  	insn_fetch_t fetched_insn_obj = mmu -> load_insn(target_pc);
 	            encoded_instruction = fetched_insn_obj.insn.bits();
-	            vpi_printf("[VPI_INFO] 			PC = 0x%08x -> Fetched instruction: 0x%08x\n", target_pc, encoded_instruction);
+	            //vpi_printf("[VPI_INFO] 			PC = 0x%08x -> Fetched instruction: 0x%08x\n", target_pc, encoded_instruction);
 	        } else {
 	            vpi_printf("[VPI_ERROR] $spike_get_instr: Failed to get MMU from Spike CPU instance.\n");
 	            vpi_free_object(arg_itr_h);
@@ -478,10 +462,6 @@ extern "C" {
 	
 	    return 0; // 성공적으로 수행되었음을 알립니다.
 	}
-
-
-
-
 
 
 
@@ -517,7 +497,6 @@ extern "C" {
 			return 1;
 		}
 
-		//reg_t regval = spike_cpu_instance->get_state()->XPR[idx];
         uint32_t reg_val = (uint32_t)spike_cpu_instance->get_state()->XPR[idx];
 		vpi_printf("[VPI_INFO] reg idx(x%d) = 0x%08x\n", idx, reg_val);
 

@@ -306,7 +306,10 @@ module picorv32_wrapper #(
 	// ************** Spike custom functions **************************
 	integer i, j;
 	integer cnt = 0;
+	integer idx;
 	reg [31:0] cur_pc, cur_instr;
+
+	integer log_file_handle;
 
 	initial begin
 		@(posedge resetn);
@@ -314,36 +317,64 @@ module picorv32_wrapper #(
 		$display("Reset is released at time %.1f[ns]", $time);
 		//$spike_init("tests/arith_basic_test/obj/firmware.elf");
 
+		log_file_handle = $fopen("dump/spike_dump.log", "w");
+
+		if (log_file_handle == 0) begin
+      		$display("ERROR: Failed to open spike_monitor.log");
+      		$finish;
+    	end
+		else begin
+      		$display("Log file 'spike_monitor.log' opened successfully.");
+      		$fdisplay(log_file_handle, "Spike_Step,     PC,  Instruction");
+    	end
 
 		//fork 
 			//begin
 				$spike_init("tests/arith_basic_test/obj/firmware.elf");
-				#500;
 			//end
 			//begin	
 		
 				//$spike_set_start_pc(32'h80000000);  // 내가 원하는 PC 설정
 
-				$spike_start();
-				#100;
-			
+			//	$spike_start();
+				//#100;
+				
+				/*		
+				#800;
 				repeat (100) begin
-					#10;
+					#5;
 					$spike_get_pc(cur_pc);
-					//$spike_run_steps(1);
-					$spike_get_instr(cur_pc, cur_instr);
-				end
-		
-				$spike_stop();
-				/*
-				repeat(10) begin
-					cnt++;
-					$display("[Verilog] Step count : %0d", cnt);
-					$spike_get_pc(cur_pc);
-					$spike_run_steps(1);
 					$spike_get_instr(cur_pc, cur_instr);
 				end
 				*/
+				//$spike_stop();
+			
+				
+				//#800;	
+				//repeat (182000) $spike_run_steps(1);
+				//repeat(100) begin
+				
+				//repeat(182050) begin //TODO
+				//repeat(230000) begin //TODO
+				repeat(100) begin //TODO
+					cnt++;
+					//$display("[Verilog] Step count : %0d", cnt);
+					$spike_get_pc(cur_pc);
+					$spike_run_steps(1);
+					$spike_get_instr(cur_pc, cur_instr);
+
+
+					$display("[Verilog] [%8d] PC = 0x%x -> Instruction = 0x%x", cnt, cur_pc, cur_instr);
+					/*
+					for (idx=0; idx<32; idx++) begin
+						$spike_get_reg(idx);
+  					end
+					*/
+					$fdisplay(log_file_handle, "%-15d, 0x%h,  0x%h", cnt, cur_pc, cur_instr);
+				end
+
+				$fclose(log_file_handle);
+    			$display("Log file 'spike_monitor.log' closed.");
 				
 				//$spike_get_pc(cur_pc);
 				/*

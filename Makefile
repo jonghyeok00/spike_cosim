@@ -207,11 +207,13 @@ compareall:
 	python3 scripts/compare.py dump/dut_log dump/spike_conv_inst_log 
 	
 
+#-I/opt/riscv/include -I/opt/riscv/include/riscv -I/opt/riscv/include/fesvr -I/usr/local/include/iverilog -I/usr/share/verilator/include/vltstd
+#-L/opt/riscv/include -L/opt/riscv/include/riscv -L/opt/riscv/include/fesvr -L/usr/local/include/iverilog -L/usr/share/verilator/include/vltstd
 libspikeso:
 	# make shared object file
-	g++ scripts/spike_dpi_thread.cc -o scripts/libspike.so -fPIC -shared -std=c++17 \
-					-I/opt/riscv/include -I/opt/riscv/include/riscv -I/opt/riscv/include/fesvr -I/usr/local/include/iverilog -I/usr/share/verilator/include/vltstd \
-					-L/opt/riscv/include -L/opt/riscv/include/riscv -L/opt/riscv/include/fesvr -L/usr/local/include/iverilog -L/usr/share/verilator/include/vltstd \
+	g++ scripts/spike_dpi.cc -o scripts/libspike.so -fPIC -shared -std=c++17 \
+					-I/home/jhpark/works/cis/riscv-isa-sim -I/home/jhpark/works/cis/riscv-isa-sim/riscv -I/home/jhpark/works/cis/riscv-isa-sim/fesvr -I/usr/local/include/iverilog -I/usr/share/verilator/include/vltstd \
+					-L/home/jhpark/works/cis/riscv-isa-sim/ -L/home/jhpark/works/cis/riscv-isa-sim/riscv -L/home/jhpark/works/cis/riscv-isa-sim/fesvr -L/usr/local/include/iverilog -L/usr/share/verilator/include/vltstd \
 					-L/opt/riscv/lib -lriscv -lfesvr -lpthread -lgmp -lmpfr -lmpc -ldl -Wl,-rpath=/opt/riscv/lib \
 					-DVPI_WRAPPER
 	cp scripts/libspike.so scripts/libspike.vpi

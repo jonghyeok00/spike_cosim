@@ -35,14 +35,48 @@ static processor_t* spike_cpu_instance = nullptr;
 static cfg_t* spike_cfg_instance = nullptr;
 
 static std::thread spike_thread;
+static std::thread spike_thread1;
+static std::thread spike_thread2;
 static std::mutex spike_mutex;
+static std::atomic<bool> spike_exit(false);
 static std::atomic<bool> spike_thread_running(false);
 static std::atomic<bool> spike_thread_should_stop(false);
 
 
+static void spike_step_thread() {
+	while (!spike_exit.load()) {
+		std::lock_guard<std::mutex> g(spike_mutex);
+		spike_cpu_instance->step(1);
+
+	    uint32_t target_pc = (uint32_t)spike_cpu_instance->get_state()->pc;
+	    uint32_t encoded_instruction = 0; // Spike에서 읽어온 32비트 인스트럭션
+
+		try {
+			//std::lock_guard<std::mutex> g(spike_mutex);
+	        mmu_t* mmu = spike_cpu_instance->get_mmu();
+			
+	        if (mmu) {
+			  	insn_fetch_t fetched_insn_obj = mmu -> load_insn(target_pc);
+	            encoded_instruction = fetched_insn_obj.insn.bits();
+	            vpi_printf("[VPI_INFO] 			PC = 0x%08x -> Fetched instruction: 0x%08x\n", target_pc, encoded_instruction);
+	        } else {
+	            vpi_printf("[VPI_ERROR] $spike_get_instr: Failed to get MMU from Spike CPU instance.\n");
+	            //vpi_free_object(arg_itr_h);
+	            //return 1;
+	        }
+			
+	    } catch (trap_t& t) {
+	        // 메모리 접근 오류 (페이지 폴트 등) 처리
+	        vpi_printf("[VPI_ERROR] $spike_get_instr: Trap occurred during instruction fetch at PC 0x%08x (cause: %llu).\n", target_pc, (long long)t.cause());
+	        encoded_instruction = 0xFFFFFFFF; // 에러 시 기본값 또는 에러 코드 설정
+	    }
+	}
+}
+
+
 static void spike_run_thread() {
     try {
-        spike_thread_running.store(true);
+     //   spike_thread_running.store(true);
         // sim->run() is blocking until program exit or trap; it's the main event loop (fesvr+devices+cores).
 		vpi_printf("[VPI_INFO] Starting spike_sim_instance->run()...\n");
         spike_sim_instance->run();
@@ -52,7 +86,7 @@ static void spike_run_thread() {
     } catch (...) {
         std::cerr << "[Spike VPI thread] unknown exception in run()" << std::endl;
     }
-    spike_thread_running.store(false);
+    //spike_thread_running.store(false);
 }
 
 
@@ -181,6 +215,8 @@ extern "C" {
                 return 1; // 실패 반환
             }
 
+			spike_cpu_instance->enable_log_commits();
+
 			//reg_t entry = 0;
 			//memif_t memif(spike_sim_instance);
 			//load_elf(elf_path, &memif, &entry, 0, 32); //TODO
@@ -214,22 +250,24 @@ extern "C" {
 
     
 		// ----------- Launch background thread running sim->run() -----------
-		/*
+		
 	    try {
 			spike_thread_should_stop.store(false);
     	    spike_thread = std::thread(spike_run_thread);
-        	// optionally detach: we keep track and join in cleanup if possible
+			vpi_printf("[VPI_INFO] $spike_start: start run thread.\n");
 	    } catch (const std::exception &e) {
 		    vpi_printf("[VPI ERROR] $spike_init: fail to spawn thread: %s\n", e.what());
-		    // leave sim allocated (so user can inspect), but not running
 		    return 1;
 		}
-		*/
+		
+
+		//spike_thread1 = std::thread(spike_run_thread);
 
         return 0; // 성공 반환
     }
 
 	PLI_INT32 spike_start_vpi_calltf(PLI_BYTE8 *user_data) {
+	  /*
 	    try {
 			spike_thread_should_stop.store(false);
     	    spike_thread = std::thread(spike_run_thread);
@@ -238,6 +276,8 @@ extern "C" {
 		    vpi_printf("[VPI ERROR] $spike_start: fail to spawn thread: %s\n", e.what());
 		    return 1;
 		}
+*/
+		//spike_thread2 = std::thread(spike_step_thread);
 
      	return 0;
     }
