@@ -4,7 +4,7 @@ RISCV_GNU_TOOLCHAIN_GIT_REVISION = 411d134
 TOOLCHAIN_PREFIX = $(RISCV_GNU_TOOLCHAIN_INSTALL_PREFIX)/bin/riscv32-unknown-elf-
 #TB_HOME := $(shell pwd)
 #OBJ_DIR = $(TB_HOME)/tests/obj
-TEST_DIR = $(TB_HOME)/tests/$(TEST_NAME)
+#TEST_DIR = $(TB_HOME)/tests/$(TEST_NAME)
 
 
 
@@ -140,7 +140,7 @@ tests/%.o: tests/%.S tests/riscv_test.h tests/test_macros.h
 
 
 #TEST_NAME = pico_test
-TEST_NAME = arith_basic_test
+#TEST_NAME = arith_basic_test
 
 # Compilation & Linking
 build:
@@ -206,14 +206,11 @@ compareall:
 	python3 scripts/showtrace.py dump/testbench.trace tests/arith_basic_test/obj/firmware.elf | tee dump/dut_log
 	python3 scripts/compare.py dump/dut_log dump/spike_conv_inst_log 
 	
-
-#-I/opt/riscv/include -I/opt/riscv/include/riscv -I/opt/riscv/include/fesvr -I/usr/local/include/iverilog -I/usr/share/verilator/include/vltstd
-#-L/opt/riscv/include -L/opt/riscv/include/riscv -L/opt/riscv/include/fesvr -L/usr/local/include/iverilog -L/usr/share/verilator/include/vltstd
 libspikeso:
 	# make shared object file
 	g++ scripts/spike_dpi.cc -o scripts/libspike.so -fPIC -shared -std=c++17 \
-					-I/home/jhpark/works/cis/riscv-isa-sim -I/home/jhpark/works/cis/riscv-isa-sim/riscv -I/home/jhpark/works/cis/riscv-isa-sim/fesvr -I/usr/local/include/iverilog -I/usr/share/verilator/include/vltstd \
-					-L/home/jhpark/works/cis/riscv-isa-sim/ -L/home/jhpark/works/cis/riscv-isa-sim/riscv -L/home/jhpark/works/cis/riscv-isa-sim/fesvr -L/usr/local/include/iverilog -L/usr/share/verilator/include/vltstd \
+					-I/opt/riscv/include -I/opt/riscv/include/riscv -I/opt/riscv/include/fesvr -I/usr/local/include/iverilog -I/usr/share/verilator/include/vltstd \
+					-L/opt/riscv/include -L/opt/riscv/include/riscv -L/opt/riscv/include/fesvr -L/usr/local/include/iverilog -L/usr/share/verilator/include/vltstd \
 					-L/opt/riscv/lib -lriscv -lfesvr -lpthread -lgmp -lmpfr -lmpc -ldl -Wl,-rpath=/opt/riscv/lib \
 					-DVPI_WRAPPER
 	cp scripts/libspike.so scripts/libspike.vpi
@@ -223,7 +220,10 @@ sim:
 	mkdir -p $(TB_HOME)/dump
 	iverilog -g2012 -o top/testbench.vvp top/testbench.v top/picorv32.v -DVPI_WRAPPER -DCOMPRESSED_ISA
 	#iverilog -g2012 -o top/testbench.vvp top/testbench.v top/picorv32.v -DVPI_WRAPPER
-	vvp -M . -m scripts/libspike top/testbench.vvp +trace +vcd
+	vvp -M . -m scripts/libspike top/testbench.vvp +trace +vcd \
+					+ELF_PATH=$MY_ELF_PATH \
+					+PK_PATH=$MY_PK_PATH \
+					+ISA=$MY_ISA
 
 all:
 	make build2

@@ -7,11 +7,11 @@
 #include "sim.h"
 #include "cfg.h"
 #include "processor.h"
+#include "memif.h"
 #include "elfloader.h"
 #include "elf.h"
 #include "htif.h"
 #include "common.h"
-#include "memif.h"
 #include "mmu.h"
 #include "decode.h"
 #include <vector>
@@ -30,88 +30,63 @@ static processor_t* spike_cpu_instance = nullptr;
 static cfg_t* spike_cfg_instance = nullptr;
 static htif_t* spike_htif_instance = nullptr;
 
-static std::vector<std::pair<reg_t, abstract_mem_t*>> make_mems(const std::vector<mem_cfg_t> &layout)
+
+static void bad_address(const std::string& situation, reg_t addr)
 {
-  std::vector<std::pair<reg_t, abstract_mem_t*>> mems;
-  mems.reserve(layout.size());
-  for (const auto &cfg : layout) {
-    mems.push_back(std::make_pair(cfg.get_base(), new mem_t(cfg.get_size())));
-
-    	vpi_printf("[TS_DEBUG] cfg.get_base() : %lx, cfg.get_size() : %lx\n", cfg.get_base(), cfg.get_size());
-  }
-  return mems;
+  std::cerr << "Access exception occurred while " << situation << ":\n";
+  std::cerr << "Memory address 0x" << std::hex << addr << " is invalid\n";
+  exit(-1);
 }
 
 
-/*
-void spike_htif_step(sim_t* sim) {
-	htif_t* htif = sim->get_htif();
-	if (!htif)
-		return 1;
+static void run_step(size_t steps) {
+        uint64_t tohost;
 
-	auto& mem = htif->mem; // htif 메모리
-	auto& device_list = htif->device_list;
+        auto enq_func = [](std::queue<reg_t>* q, uint64_t x) { q->push(x); };
+        std::queue<reg_t> fromhost_queue;
+        std::function<void(reg_t)> fromhost_callback =
+        	std::bind(enq_func, &fromhost_queue, std::placeholders::_1);
+            
+        try {
+        	//vpi_printf("[DEBUG] $spike_init : get_tohost_addr %lx\n", (spike_sim_instance->get_tohost_addr()));
+            //vpi_printf("[DEBUG] $spike_init : get_fromhost_addr %lx\n", (spike_sim_instance->get_fromhost_addr()));
+            if ((tohost = spike_sim_instance->from_target(spike_sim_instance->memif().read_uint64(spike_sim_instance->get_tohost_addr()))) != 0)
+            	//vpi_printf("[DEBUG] $spike_init : tohost %lx\n", tohost);
+                spike_sim_instance->memif().write_uint64(spike_sim_instance->get_tohost_addr(), target_endian<uint64_t>::zero);
+            } catch (mem_trap_t& t) {
+            	vpi_printf("[VPI ERROR] $spike_init : First try; TOHOST_ADDR: %lx\n", spike_sim_instance->get_tohost_addr());
+            	vpi_printf("[VPI ERROR] $spike_init : First try error\n");
+            	bad_address("accessing tohost", t.get_tval());
+        }
 
-	uint64_t tohost = 0;
-	static std::queue<uint64_t> fromhost_queue;
-
-// ------------------------
-// (1) tohost 읽기
-// ------------------------
-	try {
-		if (htif->tohost_addr) {
-			auto raw = mem.read_uint64(htif->tohost_addr);
-			tohost = htif->from_target(raw);
-
-			if (tohost != 0) {
-				mem.write_uint64(htif->tohost_addr, target_endian<uint64_t>::zero);
-			}
-		}
-	} catch (const mem_trap_t& t) {
-		htif->bad_address("accessing tohost", t.get_tval());
-	}
-
-// ------------------------
-// (2) 명령 처리 / idle
-// ------------------------
-	try {
-		if (tohost != 0) {
-
-		auto enq = [&](uint64_t x) {
-		  fromhost_queue.push(x);
-		};
-
-		command_t cmd(mem, tohost, enq);
-		device_list.handle_command(cmd);
-	} else {
-		htif->idle();
-	}
-
-	device_list.tick();
-
-// ------------------------
-// (3) fromhost 쓰기
-// ------------------------
-	if (!fromhost_queue.empty()) {
-
-		auto raw = mem.read_uint64(htif->fromhost_addr);
-		uint64_t curr = htif->from_target(raw);
-
-		if (curr == 0) {
-			uint64_t val = fromhost_queue.front();
-			fromhost_queue.pop();
-
-			mem.write_uint64(htif->fromhost_addr, htif->to_target(val));
-		}
-	}
-
-	} catch (const mem_trap_t& t) {
-		std::stringstream s;
-		s << std::hex << tohost;
-		htif->bad_address("host accessing memory (tohost=" + s.str() + ")", t.get_tval());
-	}
+        try {
+        	if (tohost != 0) {
+            	command_t cmd(spike_sim_instance->memif(), tohost, fromhost_callback);
+                //vpi_printf("[DEBUG_NOT0] $spike_init : tohost %lx\n", tohost);
+                spike_sim_instance->get_device_list().handle_command(cmd);
+            } else {
+            	spike_sim_instance->step(steps);
+            }
+            
+			spike_sim_instance->get_device_list().tick();
+            //vpi_printf("[DEBUG_STEP] $spike_init : tohost %lx\n", tohost);
+        } catch (mem_trap_t& t) {
+        	std::stringstream tohost_hex;
+            tohost_hex << std::hex << tohost;
+        	vpi_printf("[VPI ERROR] $spike_init : Second try error\n");
+        	exit(-1);
+        } 
+        
+		try {
+        	if (!fromhost_queue.empty() && !spike_sim_instance->memif().read_uint64(spike_sim_instance->get_fromhost_addr())){
+            	spike_sim_instance->memif().write_uint64(spike_sim_instance->get_fromhost_addr(), spike_sim_instance->to_target(fromhost_queue.front()));
+                fromhost_queue.pop();
+            }
+        } catch (mem_trap_t& t) {
+        	vpi_printf("[VPI ERROR] $spike_init : Third try error\n");
+            exit(-3);
+        }
 }
-*/
 
 
 
@@ -124,34 +99,187 @@ extern "C" {
         vpiHandle systf_handle, arg_iterator, arg_handle;
         s_vpi_value arg_value;
 
-        // 1. 현재 Verilog 시스템 태스크 호출에 대한 핸들을 가져옵니다.
         systf_handle = vpi_handle(vpiSysTfCall, NULL);
-
-        // 2. Verilog에서 전달된 인자들을 순회하기 위한 반복자를 가져옵니다.
         arg_iterator = vpi_iterate(vpiArgument, systf_handle);
 
         if (!arg_iterator) {
-            vpi_printf("[VPI ERROR] $spike_init 태스크에 ELF 경로 인자가 없습니다.\n");
+			vpi_printf("[VPI ERROR] $spike_init: invalid handle.\n");
             return 1;
         }
 
-        // 3. 첫 번째 인자(elf_path)의 핸들을 가져옵니다.
         arg_handle = vpi_scan(arg_iterator);
 
-        // 4. 이 인자가 문자열임을 VPI에게 알려주고, 실제 값을 가져옵니다.
-        arg_value.format = vpiStringVal;     // 문자열 형식으로 가져오도록 지정
-        vpi_get_value(arg_handle, &arg_value); // arg_value.value.str 에 값이 저장됩니다.
+        arg_value.format = vpiStringVal;
+		vpi_get_value(arg_handle, &arg_value);
         
-          // 5. C++ std::string으로 변환하여 사용합니다.
-          std::string elf_path = arg_value.value.str;
-          //const char *elf_path = arg_value.value.str;
+        std::string elf_path = arg_value.value.str;
 
-        // 6. 사용 후에는 VPI 반복자를 해제합니다.
         vpi_free_object(arg_iterator);
 
-        // 기존 인스턴스가 있다면 재초기화를 위해 해제합니다.
         if (spike_sim_instance) {
-            vpi_printf("[VPI WARN] Spike 시뮬레이터가 이미 초기화되었습니다. 기존 인스턴스를 해제하고 재초기화합니다.\n");
+            delete spike_sim_instance;
+            spike_sim_instance = nullptr;
+            spike_cpu_instance = nullptr;
+            if (spike_cfg_instance) {
+                delete spike_cfg_instance;
+                spike_cfg_instance = nullptr;
+            }
+        }
+
+
+        try {
+            spike_cfg_instance = new cfg_t();
+			spike_cfg_instance->isa = "RV32IMC";
+            //spike_cfg_instance->hartids.push_back(0);
+            spike_cfg_instance->bootargs = nullptr;
+			spike_cfg_instance->priv = DEFAULT_PRIV;
+			spike_cfg_instance->real_time_clint = false;
+			spike_cfg_instance->endianness = endianness_little;
+       
+    		std::vector<size_t> default_hartids;
+    		default_hartids.reserve(spike_cfg_instance->nprocs());
+    		for (size_t i = 0; i < spike_cfg_instance->nprocs(); ++i) {
+      			default_hartids.push_back(i);
+    		}
+    		spike_cfg_instance->hartids = default_hartids;
+
+
+			// Memory Layout
+			std::vector<std::pair<reg_t, abstract_mem_t*>> mems_instance;
+			mems_instance.push_back({0x80000000, new mem_t(128 * 1024 * 1024)}); // {base address, memory size}
+
+
+            std::vector<device_factory_sargs_t> plugin_device_factories_dummy;
+			debug_module_config_t dm_config;
+			const char *log_path_dummy = nullptr;
+            bool dtb_enabled_dummy = true; //TODO
+            const char *dtb_file_dummy = nullptr;
+            bool socket_enabled_dummy = false; //TODO
+            FILE *cmd_file_dummy = nullptr;
+            std::optional<unsigned long long> instruction_limit_dummy;
+
+            std::vector<std::string> args_vec;
+            args_vec.push_back("/opt/riscv/riscv32-unknown-elf/bin/pk");
+            args_vec.push_back(elf_path);
+            
+			// --- sim_t 인스턴스 생성 ---
+            spike_sim_instance = new sim_t(
+                spike_cfg_instance,         	// const cfg_t *cfg
+                false,                      	// bool halted 
+                mems_instance,                 	// std::vector<std::pair<reg_t, abstract_mem_t*>> mems
+                plugin_device_factories_dummy, 	// const std::vector<device_factory_sargs_t>& plugin_device_factories
+                args_vec,                   	// const std::vector<std::string>& args
+                dm_config,                  	// const debug_module_config_t &dm_config
+                log_path_dummy,             	// const char *log_path
+                dtb_enabled_dummy,          	// bool dtb_enabled
+                dtb_file_dummy,             	// const char *dtb_file
+                socket_enabled_dummy,       	// bool socket_enabled
+                cmd_file_dummy,             	// FILE *cmd_file
+				std::nullopt
+                //instruction_limit_dummy     // std::optional<unsigned long long> instruction_limit
+            );
+
+
+			spike_sim_instance->set_debug(false); // spike debug mode
+            spike_cpu_instance = spike_sim_instance->get_core(0);
+			spike_sim_instance->get_core(0)->reset();
+			if (!spike_cpu_instance) {
+                vpi_printf("[VPI ERROR] $spike_init: fail to get cpu instance.\n");
+                if (spike_sim_instance) { delete spike_sim_instance; spike_sim_instance = nullptr; }
+                if (spike_cfg_instance) { delete spike_cfg_instance; spike_cfg_instance = nullptr; }
+                return 1;
+            }
+
+			// Check elf_path
+			std::ifstream elf_file_chk(elf_path, std::ios::ate | std::ios::binary);
+			if (!elf_file_chk.is_open()) {
+				std::cerr << "[VPI ERROR] $spike_init - ELF can't not be opend: " << elf_path << std::endl;
+				return 1;
+			}
+			else {
+            	std::cout << "[VPI INFO] $spike_init - ELF load success(" << elf_path << ")" << std::endl;
+            	//std::cout << "[VPI INFO] $spike_init - Entry point = 0x" << std::hex << entry << std::endl; // 0x%lx
+				//return elf_file_chk.tellg();
+			}
+        } catch (const std::exception& e) {
+            vpi_printf("[VPI ERROR] $spike_init: exception happens %s\n", e.what());
+            if (spike_sim_instance) { delete spike_sim_instance; spike_sim_instance = nullptr; }
+            if (spike_cfg_instance) { delete spike_cfg_instance; spike_cfg_instance = nullptr; }
+            return 1;
+        }
+
+        spike_sim_instance->htif_t::set_expected_xlen(spike_sim_instance->get_core(0)->get_isa().get_max_xlen());
+       	// spike_sim_instance->set_procs_debug(true);
+	    spike_sim_instance->start();
+
+        if ((spike_sim_instance->get_tohost_addr()) == 0) {
+            while (!spike_sim_instance->should_exit()){
+              spike_sim_instance->idle();
+              vpi_printf("[DEBUG0] $spike_init : tohost_addr %lx\n", (spike_sim_instance->get_tohost_addr()));
+              vpi_printf("[DEBUG0] $spike_init : fromhost_addr %lx\n", (spike_sim_instance->get_fromhost_addr()));
+            }
+        }       
+
+		return 0;
+	}
+
+
+  	/* TODO
+	// ---------- VPI: $spike_init(elf_path, pk_path, target_isa) ------------
+  	// Task: Initialize simulator. Load ELF file path. PK path, target_isa
+    PLI_INT32 spike_init_vpi_calltf(PLI_BYTE8 *user_data) {
+    	std::string pk_path;
+    	std::string elf_path;
+    	std::string target_isa;
+
+
+	    vpiHandle call_handle = vpi_handle(vpiSysTfCall, NULL);
+	    vpiHandle arg_iterator = vpi_iterate(vpiArgument, call_handle);
+	
+	    s_vpi_value arg_val;
+	
+	    // 1. ELF_PATH
+	    vpiHandle elf_path_arg = vpi_scan(arg_iterator);
+		arg_val.format = vpiStringVal;
+	    vpi_get_value(elf_path_arg, &arg_val);
+	    if (arg_val.format != vpiStringVal) {
+	        vpi_printf("[VPI_ERROR] $spike_init: First argument must be a string (ELF_PATH).\n");
+	        vpi_free_object(arg_iterator);
+	        return 1;
+	    }
+		elf_path = arg_val.value.str;
+	    vpi_printf("[VPI] Configured ELF Path: %s\n", elf_path.c_str());
+
+		
+	    // 2. PK_PATH
+	    vpiHandle pk_path_arg = vpi_scan(arg_iterator);
+		arg_val.format = vpiStringVal;
+	    vpi_get_value(pk_path_arg, &arg_val);
+	    if (arg_val.format != vpiStringVal) {
+	        vpi_printf("[VPI_ERROR] $spike_init: Second argument must be a string (PK_PATH).\n");
+	        vpi_free_object(arg_iterator);
+	        return 1;
+	    }
+		pk_path = arg_val.value.str;
+	    vpi_printf("[VPI] Configured PK Path: %s\n", pk_path);
+	
+	    // 3. TARGET_ISA
+	    vpiHandle target_isa_arg = vpi_scan(arg_iterator);
+		arg_val.format = vpiStringVal;
+	    vpi_get_value(target_isa_arg, &arg_val);
+	    if (arg_val.format != vpiStringVal) {
+	        vpi_printf("[VPI_ERROR] $spike_init: Third argument must be a string (TARGET_ISA).\n");
+	        vpi_free_object(arg_iterator);
+	        return 1;
+	    }
+		target_isa = arg_val.value.str;
+	    vpi_printf("[VPI] Configured Target ISA: %s\n", target_isa.c_str());
+		
+
+        vpi_free_object(arg_iterator);
+
+        if (spike_sim_instance) {
+            vpi_printf("[VPI WARN] Spike simulator has already initiated. The existed instance objects will be deleted.\n");
             delete spike_sim_instance;
             spike_sim_instance = nullptr;
             spike_cpu_instance = nullptr;
@@ -165,6 +293,7 @@ extern "C" {
         try {
             spike_cfg_instance = new cfg_t();
 			spike_cfg_instance->isa = "rv32IMC";
+			//spike_cfg_instance->isa = target_isa.c_str();
             spike_cfg_instance->hartids.push_back(0);
             spike_cfg_instance->bootargs = nullptr;
 			spike_cfg_instance->priv = DEFAULT_PRIV;
@@ -180,17 +309,16 @@ extern "C" {
 
 
 			// Memory Layout
-			std::vector<std::pair<reg_t, abstract_mem_t*>> mems_instance;// = make_mems(spike_cfg_instance->mem_layout);
+			std::vector<std::pair<reg_t, abstract_mem_t*>> mems_instance; // = make_mems(spike_cfg_instance->mem_layout);
 			mems_instance.push_back({0x80000000, new mem_t(128 * 1024 * 1024)}); // {base address, memory size}
 
 
-            std::vector<device_factory_sargs_t> plugin_device_factories_dummy; // 현재는 더미.
-            debug_module_config_t dm_config; // const 레퍼런스로 전달되므로 실제 객체가 필요합니다.
-            //const char *log_path_dummy = nullptr;
-			const char *log_path_dummy = "dump/spike_trace_all_by_API.log";
-            bool dtb_enabled_dummy = true; //TODO
+            std::vector<device_factory_sargs_t> plugin_device_factories_dummy;
+            debug_module_config_t dm_config;
+			const char *log_path_dummy = "dump/spike_trace_all_by_API.log"; // nullptr;
+            bool dtb_enabled_dummy = true;
             const char *dtb_file_dummy = nullptr;
-            bool socket_enabled_dummy = false; //TODO
+            bool socket_enabled_dummy = false;
             FILE *cmd_file_dummy = nullptr;
             std::optional<unsigned long long> instruction_limit_dummy;
 
@@ -198,6 +326,7 @@ extern "C" {
             //args_vec.push_back("spike");
 			//args_vec.push_back("--isa=rv32i");
             args_vec.push_back("/opt/riscv/riscv32-unknown-elf/bin/pk");
+            //args_vec.push_back(pk_path);
             args_vec.push_back(elf_path);
             args_vec.push_back("--verbose");
             
@@ -214,22 +343,16 @@ extern "C" {
                 dtb_file_dummy,             // const char *dtb_file
                 socket_enabled_dummy,       // bool socket_enabled
                 cmd_file_dummy,             // FILE *cmd_file
-				//std::nullopt
-                instruction_limit_dummy     // std::optional<unsigned long long> instruction_limit
+				std::nullopt
+                //instruction_limit_dummy     // std::optional<unsigned long long> instruction_limit
             );
-
-
-            // Spike 초기화 추가 단계 (Spike API에 따라 다름)
-            // (Spike의 sim_t는 생성자에서 args_vec를 통해 ELF 경로를 받으면
-            // 내부적으로 FESVR을 사용하여 ELF 파일을 로드하는 것이 일반적입니다.
-            // 따라서 load_program()을 별도로 호출하지 않아도 되는 경우가 많습니다.)
 
             // --- processor_t 인스턴스 가져오기 ---
 			spike_sim_instance->set_debug(false); // spike debug mode
             spike_cpu_instance = spike_sim_instance->get_core(0);
 			spike_sim_instance->get_core(0)->reset();
 			
-			spike_cpu_instance->enable_log_commits(); //TODO
+			spike_cpu_instance->enable_log_commits();
            
 			if (!spike_cpu_instance) {
                 vpi_printf("[VPI ERROR] $spike_init: CPU 코어 인스턴스를 가져오지 못했습니다. Spike 초기화 실패.\n");
@@ -237,8 +360,6 @@ extern "C" {
                 if (spike_cfg_instance) { delete spike_cfg_instance; spike_cfg_instance = nullptr; }
                 return 1; // 실패 반환
             }
-
-			//spike_cpu_instance->enable_log_commits(); //TODO
 
 			//reg_t entry = 0;
 			//memif_t memif(spike_sim_instance);
@@ -261,19 +382,26 @@ extern "C" {
             if (spike_sim_instance) { delete spike_sim_instance; spike_sim_instance = nullptr; }
             if (spike_cfg_instance) { delete spike_cfg_instance; spike_cfg_instance = nullptr; }
             return 1;
-        } /*catch (...) {
-            vpi_printf("[VPI ERROR] $spike_init: Spike sim_t 생성 중 알 수 없는 예외 발생!\n");
-            if (spike_sim_instance) { delete spike_sim_instance; spike_sim_instance = nullptr; }
-            if (spike_cfg_instance) { delete spike_cfg_instance; spike_cfg_instance = nullptr; }
-            return 1;
-        }*/
+        } 
 
-		//spike_sim_instance->run();
+        spike_sim_instance->htif_t::set_expected_xlen(spike_sim_instance->get_core(0)->get_isa().get_max_xlen());
+        //spike_sim_instance->set_procs_debug(true);
 		spike_sim_instance->start();
+
+ 
+        if (spike_sim_instance->get_tohost_addr() == 0) {
+            while (!spike_sim_instance->should_exit()){
+              spike_sim_instance->idle();
+              vpi_printf("[DEBUG0] $spike_init : tohost_addr %lx\n", (spike_sim_instance->get_tohost_addr()));
+              vpi_printf("[DEBUG0] $spike_init : fromhost_addr %lx\n", (spike_sim_instance->get_fromhost_addr()));
+            }
+        }       
+
 
         return 0; // 성공 반환
     }
 
+	*/
 
 	// ---------- VPI: $spike_run_steps(N) ----------
 	// Task: run N steps (instructions)
@@ -308,21 +436,22 @@ extern "C" {
 		}
 
 		// Run steps: call cpu->step repeatedly (many Spike versions accept step(1))
-		//for (int i = 0; i < steps; ++i) {
-			spike_sim_instance->step(steps);
-			if (!spike_sim_instance) {
-				vpi_printf("[VPI ERROR] $spike_run_steps: spike not initialized\n");
-			}
-			else {
-				spike_sim_instance->step_once();
-			}
-		//}	
+		run_step(steps);
+		/*
+		spike_sim_instance->step(steps);
+		if (!spike_sim_instance) {
+			vpi_printf("[VPI ERROR] $spike_run_steps: spike not initialized\n");
+		}
+		else {
+			spike_sim_instance->step_once();
+		}
+		
+		vpi_printf("[VPI_INFO] $spike_run_steps: ran %d step(s)\n", steps);
+		*/
 
-		//vpi_printf("[VPI_INFO] $spike_run_steps: ran %d step(s)\n", steps);
-
+		
 		return 0;
 	}
-
 
 
 	PLI_INT32 spike_get_pc_vpi_calltf(PLI_BYTE8* user_data) {
@@ -331,29 +460,25 @@ extern "C" {
 	    vpiHandle arg_h;
 	    s_vpi_value arg_value;
 	
-	    // 1. 태스크 호출 핸들 가져오기
-	    tf_call_h = vpi_handle(vpiSysTfCall, NULL); // 현재 시스템 태스크 호출의 핸들을 얻습니다.
+	    tf_call_h = vpi_handle(vpiSysTfCall, NULL);
 	    if (!tf_call_h) {
 	        vpi_printf("[VPI_ERROR] $spike_get_pc: Failed to get task call handle.\n");
 	        return 1;
 	    }
 	
-	    // 2. 인자 목록(iterator) 가져오기
-	    arg_itr_h = vpi_iterate(vpiArgument, tf_call_h); // 태스크 인자들을 반복할 수 있는 iterator를 얻습니다.
+	    arg_itr_h = vpi_iterate(vpiArgument, tf_call_h);
 	    if (!arg_itr_h) {
 	        vpi_printf("[VPI_ERROR] $spike_get_pc: No arguments provided to $spike_get_pc. Expected one argument.\n");
 	        return 1;
 	    }
 	
-	    // 3. 첫 번째 인자 핸들 가져오기
-	    arg_h = vpi_scan(arg_itr_h); // 첫 번째 인자의 핸들을 얻습니다.
+	    arg_h = vpi_scan(arg_itr_h);
 	    if (!arg_h) {
 	        vpi_printf("[VPI_ERROR] $spike_get_pc: Failed to get the first argument handle.\n");
-	        vpi_free_object(arg_itr_h); // 사용 후 iterator 해제
-	        return 1;
+	        vpi_free_object(arg_itr_h);
+			return 1;
 	    }
 	
-	    // 4. Spike CPU 인스턴스 유효성 확인 (기존 로직)
 	    if (!spike_sim_instance || !spike_cpu_instance) {
 	        vpi_printf("[VPI_ERROR] $spike_get_pc: Spike not initialized.\n");
 	        vpi_free_object(arg_itr_h);
@@ -363,45 +488,39 @@ extern "C" {
 	    uint32_t pc = (uint32_t)spike_cpu_instance->get_state()->pc;
 	    //vpi_printf("[VPI_INFO] PC = 0x%08x\n", pc);
 	
-	    // 6. 베릴로그 인자에 PC 값 설정
-	    arg_value.format = vpiIntVal; // 정수 형태로 값을 설정할 것임을 지정합니다.
-	    arg_value.value.integer = (PLI_INT32)pc; // uint32_t를 PLI_INT32로 캐스팅하여 값을 넣어줍니다.
+	    arg_value.format = vpiIntVal;
+		arg_value.value.integer = (PLI_INT32)pc;
+	    vpi_put_value(arg_h, &arg_value, NULL, vpiNoDelay);
 	
-	    vpi_put_value(arg_h, &arg_value, NULL, vpiNoDelay); // 인자 핸들에 PC 값을 씁니다.
-	
-	    vpi_free_object(arg_itr_h); // 사용 후 iterator 해제 (중요!)
+	    vpi_free_object(arg_itr_h);
 	
 	    return 0;
 	}
 	
 	
-	// VPI: $spike_get_instr (태스크 함수)
+	// $spike_get_instr
 	PLI_INT32 spike_get_instr_vpi_calltf(PLI_BYTE8* user_data) {
 	    vpiHandle tf_call_h;
 	    vpiHandle arg_itr_h;
-	    vpiHandle pc_arg_h;         // 첫 번째 인자: PC 주소 (입력)
-	    vpiHandle insn_arg_h;       // 두 번째 인자: 인스트럭션 (출력)
-	    s_vpi_value arg_value;
-	    //reg_t target_pc = 0; 
-	    uint32_t target_pc = 0; 
-	    //insn_t encoded_instruction = 0; // Spike에서 읽어온 32비트 인스트럭션
-	    uint32_t encoded_instruction = 0; // Spike에서 읽어온 32비트 인스트럭션
+	    vpiHandle pc_arg_h;
+		vpiHandle insn_arg_h;
+		s_vpi_value arg_value;
+	    
+		uint32_t target_pc = 0; 
+	    uint32_t encoded_instruction = 0;
 	
-	    // 1. 태스크 호출 핸들 가져오기
 	    tf_call_h = vpi_handle(vpiSysTfCall, NULL);
 	    if (!tf_call_h) {
 	        vpi_printf("[VPI_ERROR] $spike_get_instr: Failed to get task call handle.\n");
 	        return 1;
 	    }
 	
-	    // 2. 인자 목록(iterator) 가져오기
 	    arg_itr_h = vpi_iterate(vpiArgument, tf_call_h);
 	    if (!arg_itr_h) {
 	        vpi_printf("[VPI_ERROR] $spike_get_instr: No arguments provided. Expected two arguments (PC, instruction_output).\n");
 	        return 1;
 	    }
 	
-	    // 3. 첫 번째 인자 핸들 (PC 주소) 가져오기
 	    pc_arg_h = vpi_scan(arg_itr_h);
 	    if (!pc_arg_h) {
 	        vpi_printf("[VPI_ERROR] $spike_get_instr: Failed to get the first argument (PC address).\n");
@@ -409,7 +528,6 @@ extern "C" {
 	        return 1;
 	    }
 	
-	    // 4. 두 번째 인자 핸들 (encoded_instruction 출력) 가져오기
 	    insn_arg_h = vpi_scan(arg_itr_h);
 	    if (!insn_arg_h) {
 	        vpi_printf("[VPI_ERROR] $spike_get_instr: Failed to get the second argument (encoded_instruction output).\n");
@@ -417,23 +535,19 @@ extern "C" {
 	        return 1;
 	    }
 	
-	    // 5. Spike CPU 인스턴스 유효성 확인
 	    if (!spike_cpu_instance) {
 	        vpi_printf("[VPI_ERROR] $spike_get_instr: Spike CPU instance not initialized.\n");
 	        vpi_free_object(arg_itr_h);
 	        return 1;
 	    }
 	
-	    // 6. 첫 번째 인자 (PC 주소) 값 읽기
-	    arg_value.format = vpiIntVal; // 베릴로그에서 정수 형태로 PC 값을 받을 것
+	    arg_value.format = vpiIntVal;
 	    vpi_get_value(pc_arg_h, &arg_value);
-	    target_pc = (reg_t)arg_value.value.integer; // 읽어온 PC 값을 Spike의 reg_t 타입으로 변환
+	    target_pc = (reg_t)arg_value.value.integer;
 	
 	    //vpi_printf("[VPI_INFO] Requesting instruction at PC = 0x%08x\n", target_pc);
 	
-	    // 7. Spike의 MMU를 통해 해당 PC 주소의 인스트럭션 가져오기
 	    try {
-	        // processor_t에서 mmu_t 객체를 얻습니다.
 	        mmu_t* mmu = spike_cpu_instance->get_mmu();
 			
 	        if (mmu) {
@@ -447,20 +561,19 @@ extern "C" {
 	        }
 			
 	    } catch (trap_t& t) {
-	        // 메모리 접근 오류 (페이지 폴트 등) 처리
+	        // Memory access error (Page fault)
 	        vpi_printf("[VPI_ERROR] $spike_get_instr: Trap occurred during instruction fetch at 0x%llx (cause: %llu).\n", (long long)target_pc, (long long)t.cause());
-	        encoded_instruction = 0xFFFFFFFF; // 에러 시 기본값 또는 에러 코드 설정
+	        encoded_instruction = 0xFFFFFFFF; // If error happens, set error code to 0xffffffff
 	    }
 	
-	    // 8. 가져온 인스트럭션을 두 번째 인자(insn_arg_h)에 설정하여 베릴로그로 전달
-	    arg_value.format = vpiIntVal; // 정수 형태로 값을 설정할 것임을 지정합니다.
-	    arg_value.value.integer = (PLI_INT32)encoded_instruction; // insn_t를 PLI_INT32로 캐스팅하여 값을 넣어줍니다.
+	    arg_value.format = vpiIntVal;
+	    arg_value.value.integer = (PLI_INT32)encoded_instruction;
 	
-	    vpi_put_value(insn_arg_h, &arg_value, NULL, vpiNoDelay); // 인자 핸들에 인스트럭션 값을 씁니다.
+	    vpi_put_value(insn_arg_h, &arg_value, NULL, vpiNoDelay);
 	
-	    vpi_free_object(arg_itr_h); // 사용 후 iterator 해제 (매우 중요!)
+	    vpi_free_object(arg_itr_h);
 	
-	    return 0; // 성공적으로 수행되었음을 알립니다.
+	    return 0;
 	}
 
 
@@ -504,8 +617,8 @@ extern "C" {
 	}
 
 
-    // VPI Cleanup 함수: 시뮬레이션 종료 시 Spike 객체 정리
-    PLI_INT32 cleanup_spike_vpi(p_cb_data cb_data_p) {
+    // VPI Clean-up when simulation is finished
+	PLI_INT32 cleanup_spike_vpi(p_cb_data cb_data_p) {
         if (spike_sim_instance) {
             delete spike_sim_instance;
             spike_sim_instance = nullptr;
@@ -515,7 +628,6 @@ extern "C" {
         return 0;
     }
 
-    // VPI 시스템 태스크들을 등록하는 함수
     void register_spike_vpi_tasks() {
         // Task 1: $spike_init
         s_vpi_systf_data tf_data_init;
@@ -561,7 +673,7 @@ extern "C" {
         tf_data_get_instr.tfname = "$spike_get_instr";
         vpi_register_systf(&tf_data_get_instr);
 
-		// Task 4: $spike_get_reg
+		// Task 5: $spike_get_reg
         s_vpi_systf_data tf_data_get_reg;
         tf_data_get_reg.type = vpiSysTask;
         tf_data_get_reg.sysfunctype = 0;
@@ -571,7 +683,6 @@ extern "C" {
 		tf_data_get_reg.user_data = NULL;
         tf_data_get_reg.tfname = "$spike_get_reg";
         vpi_register_systf(&tf_data_get_reg);
-
 
 		// register callback in the end of simulation
         s_cb_data cb_data_end;
@@ -585,7 +696,6 @@ extern "C" {
     }
 
 
-    // iverilog가 모듈을 로드할 때 이 함수를 호출하여 VPI 태스크를 등록합니다.
     void (*vlog_startup_routines[])() = {
         register_spike_vpi_tasks,
         0
@@ -594,7 +704,9 @@ extern "C" {
 
 
 #elif DPI_WRAPPER
- 
+	
+	//TODO) Modify DPI Version later..
+
     // --- spike_init (DPI-C++ 버전) ---
     // SystemVerilog의 `string` 타입(`input string elf_path_sv`)을
     // C++의 `const char*` 타입(`const char* elf_path_c`)으로 받습니다.
@@ -694,40 +806,9 @@ extern "C" {
         return 0; // 성공 반환
     }
 
-/*
-    // 한 명령어 실행
-    void spike_step() {
-     	if (!cpu) {
-	   std::cerr << "[Spike] ERROR: CPU not initialized\n";
-	   return;
-	}
-    	cpu->step(1);
-    }
 
-    // 현재 PC 가져오기
-    uint32_t spike_get_pc() {
-    	return (uint32_t)cpu->get_state()->pc;
-    }
-
-    // 레지스터 값 가져오기
-    uint32_t spike_get_reg(int idx) {
-    	return (uint32_t)cpu->get_state()->XPR[idx];
-    }
-
-
-    // 메모리 읽기 (예: 검증용)
-    /*
-    uint32_t spike_read_mem(uint32_t addr) {
-    	uint32_t val;
-
-	sim->debug_mmu->load_mem(addr, sizeof(val), (uint8_t*)&val);
-
-	return val;
-    }
-    */
-
-//#else
-//    std::cerr << "[Spike] ERROR: DPI/VPI interface is not defined. Add the option under compiling with g++\n";
+#else
+    std::cerr << "[Spike] ERROR: DPI/VPI interface is not defined. Add the option under compiling with g++\n";
 #endif
 
 }

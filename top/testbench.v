@@ -43,7 +43,31 @@ module testbench #(
 		$display("TIMEOUT");
 		$finish;
 	end
-	
+
+	string elf_path;
+	string pk_path;
+	string isa;
+
+	initial begin
+ 		if (!$value$plusargs("ELF_PATH=%s", elf_path)) begin
+      		$display("WARNING: ELF_PATH not set via plusargs. Using default value.");
+      		//elf_path = "./default/program.elf";
+			//elf_path = "tests/arith_basic_test/obj/firmware.hex";
+    	end	
+
+    	if (!$value$plusargs("PK_PATH=%s", pk_path)) begin
+      		$display("WARNING: PK_PATH not set via plusargs. Using default value.");
+      		//pk_path = "/default/riscv-pk";
+    	end
+
+    	// ISA 환경 변수 읽기
+    	if (!$value$plusargs("ISA=%s", isa)) begin
+      		$display("WARNING: ISA not set via plusargs. Using default value.");
+      		//isa = "RV32IMAC";
+		end
+
+	end
+
 
 	wire trace_valid;
 	wire [35:0] trace_data;
@@ -264,14 +288,16 @@ module picorv32_wrapper #(
 
 	initial begin
 		if (!$value$plusargs("firmware=%s", firmware_file)) begin
+			//firmware_file = elf_path;
 			firmware_file = "tests/arith_basic_test/obj/firmware.hex";
-			//firmware_file = "tests/pico_test/obj/firmware.hex";
+
 			$display("[DBG] picorv32 firmware_file = %0s", firmware_file);
 		end
 		
 		$readmemh(firmware_file, mem.memory);
 		$display("\n");
 
+		/*
        	$display("--- Memory Contents after $readmemh ---");
      	$display("mem data width = %0d", $bits(mem.memory[0]));
      	$display("mem_array[0] = 0x%h", mem.memory[0]);
@@ -279,6 +305,7 @@ module picorv32_wrapper #(
         $display("mem_array[2] = 0x%h", mem.memory[2]);
         $display("mem_array[3] = 0x%h", mem.memory[3]);
         $display(".....\n");
+		*/
 	end
 
 
@@ -292,132 +319,148 @@ module picorv32_wrapper #(
 			$display("TRAP after %1d clock cycles", cycle_counter);
 			if (tests_passed) begin
 				$display("ALL TESTS PASSED.");
-				$finish;
+			//	$finish;
 			end
 			else begin
 				$display("ERROR!");
 				if ($test$plusargs("noerror"))
 					$finish;
-				$stop;
+			//	$stop;
 			end
 		end
 	end
 
 	// ************** Spike custom functions **************************
 	integer i, j;
-	integer cnt = 0;
-	integer idx;
 	reg [31:0] cur_pc, cur_instr;
+    reg [31:0] golden_pc_arr [0:2**20-1];
+    reg [31:0] golden_instr_arr [0:2**20-1];
+    reg [31:0] dut_pc_arr [0:2**20-1];
+    reg [31:0] dut_instr_arr [0:2**20-1];
+
+    integer vp_cnt;
+    integer vi_cnt;
+    integer dp_cnt;
+    integer di_cnt;
+   
+    reg skip;
+
+    initial begin
+        vp_cnt = 0;
+        vi_cnt = 0;
+        dp_cnt = 0;
+        di_cnt = 0;
+        skip = 0;
+    end
+
+
+    reg toggle;
+
+	////////// Golden array filling /////////////////
+    always @(toggle) begin
+        if ((cur_pc < 'h0001_8000) && (cur_instr != 'hffff_ffff) && skip) begin
+            golden_pc_arr[vp_cnt] = cur_pc;
+            golden_instr_arr[vi_cnt] = cur_instr;
+            vp_cnt = vp_cnt + 1;
+            vi_cnt = vi_cnt + 1;
+        end
+    end
+
+	/////////// DUT array filling /////////////////
+    always @(posedge top.uut.picorv32_core.cpuregs_write) begin
+        if (!top.uut.picorv32_core.resetn) begin
+            @(posedge clk);
+        end
+        else begin
+            dut_pc_arr[dp_cnt] = top.uut.picorv32_core.dbg_insn_addr;
+            dut_instr_arr[di_cnt] = top.uut.picorv32_core.dbg_insn_opcode;
+            dp_cnt = dp_cnt + 1;
+            di_cnt = di_cnt + 1;
+        end
+    end
+
+    integer cmp_cnt;
+    integer cmp_pass;
+    integer cmp_fail;
+
+    initial begin
+        cmp_pass = 0;
+        cmp_fail = 0;
+    end
 
 	integer log_file_handle;
+	//////// Compare logic //////////////////////////////////
+    always @(posedge clk) begin
+        if(resetn & trap) begin
+            dut_pc_arr[dp_cnt] = top.uut.picorv32_core.dbg_insn_addr;
+            dut_instr_arr[di_cnt] = top.uut.picorv32_core.dbg_insn_opcode;
+            dp_cnt = dp_cnt + 1;
+            di_cnt = di_cnt + 1;
+
+	
+			log_file_handle = $fopen("dump/cosim_result.log", "w");
+			if (log_file_handle == 0) begin
+      			$display("ERROR: Failed to open cosim_result.log");
+      			$finish;
+    		end
+			else begin
+      			$display("Log file 'cosim_result.log' opened successfully.");
+      			$fdisplay(log_file_handle, "[Step Num],     [Golden PC]  [Golden Instr]    [DuT PC]  [DuT Instr]");
+    		end
+
+
+            for (cmp_cnt = 0; cmp_cnt < dp_cnt; cmp_cnt = cmp_cnt + 1) begin
+                if ((golden_pc_arr[cmp_cnt] == dut_pc_arr[cmp_cnt]) && (golden_instr_arr[cmp_cnt] == dut_instr_arr[cmp_cnt])) begin
+                    cmp_pass = cmp_pass + 1;
+            		//$display("[PASS] [%0d] Golden PC = %08h, Golden Instr = %08h \n DUT PC = %08h, DUT Instr = %08h", cmp_cnt, golden_pc_arr[cmp_cnt], golden_instr_arr[cmp_cnt], dut_pc_arr[cmp_cnt], dut_instr_arr[cmp_cnt]);
+					$fdisplay(log_file_handle, "%-15d, 0x%h   0x%h \t  0x%h    0x%h", cmp_cnt, golden_pc_arr[cmp_cnt], golden_instr_arr[cmp_cnt], dut_pc_arr[cmp_cnt], dut_instr_arr[cmp_cnt]);
+                end
+                else begin
+                    cmp_fail = cmp_fail + 1;
+            		$display("[FAIL] [%0d] Golden PC = %08h, Golden Instr = %08h  /  DUT PC = %08h, DUT Instr = %08h", cmp_cnt, golden_pc_arr[cmp_cnt], golden_instr_arr[cmp_cnt], dut_pc_arr[cmp_cnt], dut_instr_arr[cmp_cnt]);
+                end
+            end
+            $display("COMPARE PASS NUM = %0d, COMPARE FAIL NUM = %0d", cmp_pass, cmp_fail);
+
+			$fclose(log_file_handle);
+    		$display("Log file 'cosim_result.log' closed.");
+
+            $finish;
+        end
+    end
+                
+	integer step;
+	bit e_break;
 
 	initial begin
+        toggle = 0;
 		@(posedge resetn);
 		$display("=========================== SPIKE SIMULATION RUN ===========================");
 		$display("Reset is released at time %.1f[ns]", $time);
-		//$spike_init("tests/arith_basic_test/obj/firmware.elf");
+	
 
-		log_file_handle = $fopen("dump/spike_dump.log", "w");
+        $spike_init("tests/arith_basic_test/obj/firmware.elf"); //TODO
+		#10;
 
-		if (log_file_handle == 0) begin
-      		$display("ERROR: Failed to open spike_monitor.log");
-      		$finish;
-    	end
-		else begin
-      		$display("Log file 'spike_monitor.log' opened successfully.");
-      		$fdisplay(log_file_handle, "Spike_Step,     PC,  Instruction");
-    	end
+	    $spike_run_steps(1000);
+		$spike_get_pc(cur_pc);
+		$spike_get_instr(cur_pc, cur_instr);
+        #10;
 
-		//fork 
-			//begin
-				$spike_init("tests/arith_basic_test/obj/firmware.elf");
-			//end
-			//begin	
-		
-				//$spike_set_start_pc(32'h80000000);  // 내가 원하는 PC 설정
+        skip = 1; // for skip spike initial handshaking
 
-			//	$spike_start();
-				//#100;
-				
-				/*		
-				#800;
-				repeat (100) begin
-					#5;
-					$spike_get_pc(cur_pc);
-					$spike_get_instr(cur_pc, cur_instr);
-				end
-				*/
-				//$spike_stop();
+		e_break = (cur_instr == 'h0000_9002)||(cur_instr == 'h0010_0073); // -> e.break(exit break) instruction in RISC-V
+
+        while(!e_break) begin
+			$spike_run_steps(1);
+            $spike_get_pc(cur_pc);
+            $spike_get_instr(cur_pc, cur_instr);
 			
-				
-				//#800;	
-				//repeat (182000) $spike_run_steps(1);
-				//repeat(100) begin
-				
-				//repeat(182050) begin //TODO
-				repeat(230000) begin //TODO
-				//repeat(100) begin //TODO
-					cnt++;
-					//$display("[Verilog] Step count : %0d", cnt);
-					$spike_get_pc(cur_pc);
-					$spike_run_steps(1);
-					$spike_get_instr(cur_pc, cur_instr);
-
-
-					$display("[Verilog] [%8d] PC = 0x%x -> Instruction = 0x%x", cnt, cur_pc, cur_instr);
-					/*
-					for (idx=0; idx<32; idx++) begin
-						$spike_get_reg(idx);
-  					end
-					*/
-					$fdisplay(log_file_handle, "%-15d, 0x%h,  0x%h", cnt, cur_pc, cur_instr);
-				end
-
-				$fclose(log_file_handle);
-    			$display("Log file 'spike_monitor.log' closed.");
-				
-				//$spike_get_pc(cur_pc);
-				/*
-				while (cur_pc != 'h000004dc) begin
-					cnt++;
-					$display("[Verilog] Step count : %0d", cnt);
-					$spike_get_pc(cur_pc);
-					$spike_run_steps(1);
-					$spike_get_instr(cur_pc, cur_instr);
-				end
-				*/
-			//end	
-		//join_any
-
-
-			/*
-			begin
-				$spike_get_pc(cur_pc);
-				//$spike_run_steps(1);
-				//cnt++;
-		
-				//while (cur_pc != 'h0000_074e) begin
-				//while (cur_pc != 'h0000_0480) begin
-				//while (cur_pc != 'h8000_3a22) begin
-				while (cnt != 205700) begin
-					cnt++;
-					$display("[Verilog] Step count : %0d", cnt);
-					$spike_get_pc(cur_pc);
-					$spike_run_steps(1);
-					$spike_get_instr(cur_pc, cur_instr);
-				end
-		
-				$display("[Verilog] Current PC value: 0x%08x", cur_pc);
-		
-				for (i=0; i<10; i++) begin
-					$spike_get_pc(cur_pc);
-					$spike_run_steps(1);
-					$spike_get_instr(cur_pc, cur_instr);
-				end
-			end
-			*/
-		
-
+            #1;
+            toggle = ~toggle;
+		end
+        skip = 0;
+		$display("[Verilog] Current PC value: 0x%08x", cur_pc);
 		$display("============================================================================");
 	end	
 	// ************** Spike custom functions **************************
