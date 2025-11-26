@@ -421,6 +421,7 @@ module picorv32_wrapper #(
                 end
             end
             $display("COMPARE PASS NUM = %0d, COMPARE FAIL NUM = %0d", cmp_pass, cmp_fail);
+			$fdisplay(log_file_handle, "@PASS NUM = %0d \n@FAIL NUM = %0d", cmp_pass, cmp_fail);
 
 			$fclose(log_file_handle);
     		$display("Log file 'cosim_result.log' closed.");
